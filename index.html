@@ -9,7 +9,6 @@
     th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #333; }
     th { color: #888; text-transform: uppercase; font-size: 12px; }
     h1 { font-size: 20px; }
-    .badge { width: 24px; height: 24px; vertical-align: middle; margin-right: 8px; }
   </style>
 </head>
 <body>
@@ -22,9 +21,8 @@
   </table>
 
   <script>
-    // Safe to expose publicly — this is the PUBLISHABLE key (read-only, browser-safe)
     const SUPABASE_URL = 'https://rpvdbjydzcuygpsxhaij.supabase.co';
-    const SUPABASE_ANON_KEY = 'PASTE_YOUR_PUBLISHABLE_KEY_HERE';
+    const SUPABASE_ANON_KEY = 'sb_publishable_Rgci8-4PCGpDURcwvLUSSg_hr7RGix8';
 
     async function loadStandings() {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/af_standings?select=*&order=position.asc`, {
