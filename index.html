@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>API-Football Test Widget</title>
+  <style>
+    body { font-family: sans-serif; background: #0d0d0d; color: #fff; padding: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #333; }
+    th { color: #888; text-transform: uppercase; font-size: 12px; }
+    h1 { font-size: 20px; }
+    .badge { width: 24px; height: 24px; vertical-align: middle; margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <h1>🧪 API-Football Test — Standings Preview</h1>
+  <table id="standings">
+    <thead>
+      <tr><th>#</th><th>Team</th><th>P</th><th>W</th><th>D</th><th>L</th><th>Pts</th></tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <script>
+    // Safe to expose publicly — this is the PUBLISHABLE key (read-only, browser-safe)
+    const SUPABASE_URL = 'https://rpvdbjydzcuygpsxhaij.supabase.co';
+    const SUPABASE_ANON_KEY = 'PASTE_YOUR_PUBLISHABLE_KEY_HERE';
+
+    async function loadStandings() {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/af_standings?select=*&order=position.asc`, {
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+        }
+      });
+      const data = await res.json();
+      const tbody = document.getElementById('rows');
+      if (data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7">No data yet — run the test script first.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = data.map(row => `
+        <tr>
+          <td>${row.position}</td>
+          <td>${row.team_name}</td>
+          <td>${row.played}</td>
+          <td>${row.won}</td>
+          <td>${row.drawn}</td>
+          <td>${row.lost}</td>
+          <td><strong>${row.points}</strong></td>
+        </tr>
+      `).join('');
+    }
+
+    loadStandings();
+  </script>
+</body>
+</html>
