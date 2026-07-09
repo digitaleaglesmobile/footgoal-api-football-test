@@ -1,0 +1,19 @@
+name: Test API-Football (manual only)
+
+   on:
+     workflow_dispatch:
+
+   jobs:
+     test:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v4
+         - uses: actions/setup-node@v4
+           with:
+             node-version: 20
+         - name: Run test script
+           env:
+             API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+             SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+             SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+           run: node test-api-football.js
