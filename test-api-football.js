@@ -6,9 +6,9 @@ const API_KEY = process.env.API_FOOTBALL_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-// Small test: just Premier League, season 2024 (allowed on free plan)
+// Small test: Premier League, season 2026 (now available on Pro plan)
 const LEAGUES = [
-  { code: 'PL', name: 'Premier League', id: 39, season: 2024 },
+  { code: 'PL', name: 'Premier League', id: 39, season: 2026 },
 ];
 
 async function apiFetch(path) {
