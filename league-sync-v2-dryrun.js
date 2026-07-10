@@ -48,6 +48,16 @@ function slugify(str) {
     .trim().replace(/\s+/g, '-').replace(/-+/g, '-');
 }
 
+// Strips common club suffixes so "Arsenal FC" and "Arsenal" match as the same team
+function normalizeTeamName(name) {
+  return name
+    .toLowerCase()
+    .replace(/\b(fc|afc|cf|sc|ac|rc|sv|vfl|vfb|tsg|ssc|us|as|ss)\b\.?/gi, '')
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function getFormString(form) {
   if (!form) return '';
   return form.slice(-5);
@@ -179,7 +189,11 @@ async function syncTeams(league) {
   const apiTeams = teamsData.response || [];
 
   const existing = await wfGetAllItems(WF.TEAMS);
-  const bySlug = indexBy(existing, 'slug');
+  const byNormalizedName = new Map();
+  for (const item of existing) {
+    const n = item.fieldData?.name;
+    if (n) byNormalizedName.set(normalizeTeamName(n), item);
+  }
 
   let matched = 0, unmatched = 0;
   const updatedIds = [];
@@ -188,6 +202,7 @@ async function syncTeams(league) {
   for (const t of apiTeams) {
     const teamName = t.team.name;
     const slug = slugify(teamName);
+    const normalized = normalizeTeamName(teamName);
 
     const fieldData = {
       name: teamName,
@@ -212,14 +227,16 @@ async function syncTeams(league) {
       updated_at: new Date().toISOString()
     });
 
-    const existingItem = bySlug.get(slug);
+    const existingItem = byNormalizedName.get(normalized);
     if (existingItem) {
       matched++;
-      await wfUpdateItem(WF.TEAMS, existingItem.id, fieldData);
+      // Keep the existing Webflow name/slug — only refresh stats/badge/stadium
+      const updateData = { ...fieldData, name: existingItem.fieldData.name, slug: existingItem.fieldData.slug };
+      await wfUpdateItem(WF.TEAMS, existingItem.id, updateData);
       updatedIds.push(existingItem.id);
     } else {
       unmatched++;
-      console.warn(`    ⚠️ NO SLUG MATCH for "${teamName}" (slug: ${slug}) — would CREATE new item`);
+      console.warn(`    ⚠️ NO NAME MATCH for "${teamName}" (normalized: "${normalized}") — would CREATE new item`);
       const created = await wfCreateItem(WF.TEAMS, fieldData);
       updatedIds.push(created.id);
     }
@@ -242,10 +259,9 @@ async function syncStandings(league) {
   }
 
   const wfTeams = await wfGetAllItems(WF.TEAMS);
-  const teamBySlug = indexBy(wfTeams, 'slug');
-  const teamByName = new Map();
+  const teamByNormalizedName = new Map();
   for (const t of wfTeams) {
-    if (t.fieldData?.name) teamByName.set(t.fieldData.name.toLowerCase(), t);
+    if (t.fieldData?.name) teamByNormalizedName.set(normalizeTeamName(t.fieldData.name), t);
   }
 
   const wfStandings = await wfGetAllItems(WF.STANDINGS);
@@ -261,10 +277,10 @@ async function syncStandings(league) {
 
   for (const entry of table) {
     const teamName = entry.team.name;
-    const teamSlug = slugify(teamName);
+    const normalized = normalizeTeamName(teamName);
     const form = getFormString(entry.form);
 
-    const wfTeam = teamBySlug.get(teamSlug) || teamByName.get(teamName.toLowerCase());
+    const wfTeam = teamByNormalizedName.get(normalized);
     if (!wfTeam) {
       console.warn(`    ⚠️ No Webflow team found for: ${teamName}`);
       continue;
@@ -287,8 +303,8 @@ async function syncStandings(league) {
     });
 
     const fieldData = {
-      name: teamName,
-      slug: `${teamSlug}-${league.code.toLowerCase()}-standing`,
+      name: wfTeam.fieldData.name,
+      slug: `${normalizeTeamName(wfTeam.fieldData.name).replace(/\s+/g, '-')}-${league.code.toLowerCase()}-standing`,
       team: wfTeam.id,
       league: league.webflow_id,
       position: entry.rank,
