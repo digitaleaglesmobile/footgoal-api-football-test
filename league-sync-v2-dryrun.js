@@ -41,22 +41,28 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function slugify(str) {
   return str.toLowerCase()
-    .replace(/[áàäâ]/g, 'a').replace(/[éèëê]/g, 'e')
-    .replace(/[íìïî]/g, 'i').replace(/[óòöô]/g, 'o')
-    .replace(/[úùüû]/g, 'u').replace(/ñ/g, 'n')
-    .replace(/ç/g, 'c').replace(/[^a-z0-9\s-]/g, '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s-]/g, '')
     .trim().replace(/\s+/g, '-').replace(/-+/g, '-');
 }
 
+// Strips accents, club-entity suffixes, AND common connector words
+// so "Atletico Madrid" ↔ "Club Atlético de Madrid" and "Malaga" ↔ "Málaga CF" both match.
 function normalizeTeamName(name) {
   return name
     .toLowerCase()
-    .replace(/\b(fc|afc|cf|sc|ac|rc|sv|vfl|vfb|tsg|ssc|us|as|ss)\b\.?/gi, '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // strip accents: á→a, é→e, ñ→n, etc.
+    .replace(/\b(fc|afc|cf|sc|ac|rc|rcd|cd|ud|sv|vfl|vfb|tsg|ssc|us|as|ss|club|de|del|la|le|el|los|las|a)\b\.?/gi, '')
     .replace(/[^a-z0-9\s]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
+// Finds the best Webflow match for an API team name:
+// 1. Exact normalized match (handles suffix/accent differences)
+// 2. Token-subset match — if every word in the API name also appears in a Webflow
+//    name's word set, treat it as a match. Only accepted if exactly ONE candidate
+//    qualifies, to avoid false positives on short/common words.
 function findTeamMatch(apiTeamName, webflowTeamsByNormalizedName) {
   const normalized = normalizeTeamName(apiTeamName);
 
@@ -64,14 +70,17 @@ function findTeamMatch(apiTeamName, webflowTeamsByNormalizedName) {
     return { item: webflowTeamsByNormalizedName.get(normalized), method: 'exact' };
   }
 
+  const apiTokens = new Set(normalized.split(' ').filter(Boolean));
+  if (apiTokens.size === 0) return null;
+
   const candidates = [];
   for (const [wfNormalized, item] of webflowTeamsByNormalizedName.entries()) {
-    if (wfNormalized.startsWith(normalized + ' ') || normalized.startsWith(wfNormalized + ' ')) {
-      candidates.push(item);
-    }
+    const wfTokens = new Set(wfNormalized.split(' ').filter(Boolean));
+    const isSubset = [...apiTokens].every(t => wfTokens.has(t));
+    if (isSubset) candidates.push(item);
   }
   if (candidates.length === 1) {
-    return { item: candidates[0], method: 'prefix' };
+    return { item: candidates[0], method: 'token-subset' };
   }
 
   return null;
@@ -205,7 +214,7 @@ async function syncTeams(league) {
     if (n) byNormalizedName.set(normalizeTeamName(n), item);
   }
 
-  let matched = 0, matchedByPrefix = 0, unmatched = 0;
+  let matched = 0, matchedByToken = 0, unmatched = 0;
   const updatedIds = [];
   const supaRows = [];
 
@@ -224,7 +233,6 @@ async function syncTeams(league) {
     };
     if (t.team.logo) fieldData['badge'] = { url: t.team.logo };
 
-    // FIXED: was "competition_code", table column is actually "league_code"
     supaRows.push({
       api_id: t.team.id,
       league_code: league.code,
@@ -241,9 +249,9 @@ async function syncTeams(league) {
     const match = findTeamMatch(teamName, byNormalizedName);
     if (match) {
       matched++;
-      if (match.method === 'prefix') {
-        matchedByPrefix++;
-        console.log(`    🔗 Prefix match: "${teamName}" → "${match.item.fieldData.name}"`);
+      if (match.method === 'token-subset') {
+        matchedByToken++;
+        console.log(`    🔗 Token match: "${teamName}" → "${match.item.fieldData.name}"`);
       }
       const updateData = { ...fieldData, name: match.item.fieldData.name, slug: match.item.fieldData.slug };
       await wfUpdateItem(WF.TEAMS, match.item.id, updateData);
@@ -257,7 +265,7 @@ async function syncTeams(league) {
   }
 
   await supabaseUpsert('af_teams', supaRows);
-  console.log(`  📊 ${league.name}: ${matched} matched (${matchedByPrefix} via prefix), ${unmatched} unmatched (would create new)`);
+  console.log(`  📊 ${league.name}: ${matched} matched (${matchedByToken} via token match), ${unmatched} unmatched (would create new)`);
   return updatedIds;
 }
 
@@ -291,7 +299,6 @@ async function syncStandings(league) {
 
   for (const entry of table) {
     const teamName = entry.team.name;
-    const form = getFormString(entry.form);
 
     const match = findTeamMatch(teamName, teamByNormalizedName);
     if (!match) {
@@ -300,7 +307,6 @@ async function syncStandings(league) {
     }
     const wfTeam = match.item;
 
-    // FIXED: was "competition_code", table column is actually "league_code"
     supaRows.push({
       league_code: league.code,
       season: league.season,
@@ -314,8 +320,8 @@ async function syncStandings(league) {
       goals_for: entry.all.goals.for,
       goals_against: entry.all.goals.against,
       points: entry.points,
-      form,
       updated_at: new Date().toISOString()
+      // NOTE: "form" removed here — af_standings table doesn't have that column
     });
 
     const fieldData = {
@@ -332,7 +338,7 @@ async function syncStandings(league) {
       'goals-against': entry.all.goals.against,
       'goal-difference': entry.goalsDiff,
       points: entry.points,
-      form,
+      form: getFormString(entry.form),
     };
 
     const existingStanding = standingIndex.get(wfTeam.id);
