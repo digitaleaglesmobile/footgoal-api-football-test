@@ -48,7 +48,6 @@ function slugify(str) {
     .trim().replace(/\s+/g, '-').replace(/-+/g, '-');
 }
 
-// Strips common club-entity suffixes so "Arsenal FC" and "Arsenal" normalize closer together
 function normalizeTeamName(name) {
   return name
     .toLowerCase()
@@ -58,19 +57,13 @@ function normalizeTeamName(name) {
     .trim();
 }
 
-// Finds the best Webflow match for an API team name:
-// 1. Try exact normalized match first (handles "Arsenal FC" ↔ "Arsenal")
-// 2. Fall back to prefix match (handles "Newcastle" ↔ "Newcastle United FC")
-//    Only accepts the prefix match if exactly ONE candidate qualifies, to avoid false positives.
 function findTeamMatch(apiTeamName, webflowTeamsByNormalizedName) {
   const normalized = normalizeTeamName(apiTeamName);
 
-  // 1. Exact match
   if (webflowTeamsByNormalizedName.has(normalized)) {
     return { item: webflowTeamsByNormalizedName.get(normalized), method: 'exact' };
   }
 
-  // 2. Prefix match — API name is the start of a longer Webflow name (e.g. "leeds" → "leeds united")
   const candidates = [];
   for (const [wfNormalized, item] of webflowTeamsByNormalizedName.entries()) {
     if (wfNormalized.startsWith(normalized + ' ') || normalized.startsWith(wfNormalized + ' ')) {
@@ -111,7 +104,7 @@ async function apiFetch(path) {
   return data;
 }
 
-// ── SUPABASE (reusing existing af_teams / af_standings tables) ─
+// ── SUPABASE ─────────────────────────────────────────────────
 async function supabaseUpsert(table, data) {
   if (!data || (Array.isArray(data) && data.length === 0)) return;
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
@@ -231,9 +224,11 @@ async function syncTeams(league) {
     };
     if (t.team.logo) fieldData['badge'] = { url: t.team.logo };
 
+    // FIXED: was "competition_code", table column is actually "league_code"
     supaRows.push({
       api_id: t.team.id,
-      competition_code: league.code,
+      league_code: league.code,
+      season: league.season,
       name: teamName,
       short_name: t.team.code,
       slug,
@@ -250,7 +245,6 @@ async function syncTeams(league) {
         matchedByPrefix++;
         console.log(`    🔗 Prefix match: "${teamName}" → "${match.item.fieldData.name}"`);
       }
-      // Keep the existing Webflow name/slug — only refresh stats/badge/stadium
       const updateData = { ...fieldData, name: match.item.fieldData.name, slug: match.item.fieldData.slug };
       await wfUpdateItem(WF.TEAMS, match.item.id, updateData);
       updatedIds.push(match.item.id);
@@ -306,8 +300,10 @@ async function syncStandings(league) {
     }
     const wfTeam = match.item;
 
+    // FIXED: was "competition_code", table column is actually "league_code"
     supaRows.push({
-      competition_code: league.code,
+      league_code: league.code,
+      season: league.season,
       team_id: entry.team.id,
       team_name: teamName,
       position: entry.rank,
