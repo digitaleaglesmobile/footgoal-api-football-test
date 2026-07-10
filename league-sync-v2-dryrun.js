@@ -34,7 +34,7 @@ const LEAGUES = [
   { code: 'CL',  name: 'UEFA Champions League',  api_id: 2,   webflow_id: '6a32a9cb63396a5393212f3c', season: 2026 },
 ];
 
-const DELAY_MS = 1000; // API-Football Pro allows 300 req/min — no need for football-data.org's 6.5s delay
+const DELAY_MS = 1000;
 
 // ── HELPERS ───────────────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -75,7 +75,7 @@ async function apiFetch(path) {
   return data;
 }
 
-// ── SUPABASE (unchanged from before) ───────────────────────────
+// ── SUPABASE ─────────────────────────────────────────────────
 async function supabaseUpsert(table, data) {
   if (!data || (Array.isArray(data) && data.length === 0)) return;
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
@@ -96,7 +96,7 @@ async function supabaseUpsert(table, data) {
   }
 }
 
-// ── WEBFLOW API (unchanged from before) ────────────────────────
+// ── WEBFLOW API ──────────────────────────────────────────────
 async function wfGetAllItems(collectionId) {
   let items = [];
   let offset = 0;
