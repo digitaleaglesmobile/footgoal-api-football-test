@@ -1,14 +1,20 @@
 // test-api-football.js
-// READ-ONLY test: pulls data from API-Football, writes to af_* Supabase tables.
+// READ-ONLY test: pulls 2026-27 season data for all 8 leagues, writes to af_* Supabase tables.
 // Does NOT touch Webflow. Safe to run anytime.
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-// Small test: Premier League, season 2026 (now available on Pro plan)
 const LEAGUES = [
-  { code: 'PL', name: 'Premier League', id: 39, season: 2026 },
+  { code: 'PL',  name: 'Premier League',       id: 39,  season: 2026 },
+  { code: 'PD',  name: 'La Liga',               id: 140, season: 2026 },
+  { code: 'BL1', name: 'Bundesliga',            id: 78,  season: 2026 },
+  { code: 'SA',  name: 'Serie A',               id: 135, season: 2026 },
+  { code: 'DED', name: 'Eredivisie',            id: 88,  season: 2026 },
+  { code: 'FL1', name: 'Ligue 1',               id: 61,  season: 2026 },
+  { code: 'BSA', name: 'Brasileirão',           id: 71,  season: 2026 },
+  { code: 'CL',  name: 'Champions League',      id: 2,   season: 2026 },
 ];
 
 async function apiFetch(path) {
@@ -43,18 +49,15 @@ async function supabaseUpsert(table, rows, conflictCols) {
 }
 
 async function testLeague(league) {
-  console.log(`\n🏟️  Testing: ${league.name} (season ${league.season})`);
+  console.log(`\n🏟️  ${league.name} (season ${league.season})`);
 
-  // 1. Check coverage first — tells us what's actually available for this season
   const info = await apiFetch(`/leagues?id=${league.id}&season=${league.season}`);
   const seasonInfo = info.response?.[0]?.seasons?.find(s => s.year === league.season);
   if (!seasonInfo) {
     console.warn(`  ⚠️ Season ${league.season} not found for ${league.name}.`);
     return;
   }
-  console.log(`  📋 Coverage:`, JSON.stringify(seasonInfo.coverage, null, 2));
 
-  // 2. Teams
   const teamsData = await apiFetch(`/teams?league=${league.id}&season=${league.season}`);
   const teamRows = (teamsData.response || []).map(t => ({
     api_id: t.team.id,
@@ -68,10 +71,8 @@ async function testLeague(league) {
     founded: t.team.founded,
     updated_at: new Date().toISOString()
   }));
-  console.log(`  📋 Sample team:`, JSON.stringify(teamRows[0], null, 2));
   await supabaseUpsert('af_teams', teamRows, 'api_id');
 
-  // 3. Standings
   const standingsData = await apiFetch(`/standings?league=${league.id}&season=${league.season}`);
   const table = standingsData.response?.[0]?.league?.standings?.[0] || [];
   const standingRows = table.map(s => ({
@@ -89,22 +90,13 @@ async function testLeague(league) {
     points: s.points,
     updated_at: new Date().toISOString()
   }));
-  console.log(`  📋 Sample standing (rank 1):`, JSON.stringify(standingRows[0], null, 2));
   await supabaseUpsert('af_standings', standingRows, 'league_code,season,team_id');
-
-  // 4. Predictions test — grab one finished fixture, check prediction quality
-  const fixturesData = await apiFetch(`/fixtures?league=${league.id}&season=${league.season}&status=FT&last=1`);
-  const fixture = fixturesData.response?.[0];
-  if (fixture) {
-    const predData = await apiFetch(`/predictions?fixture=${fixture.fixture.id}`);
-    console.log(`  🔮 Sample prediction:`, JSON.stringify(predData.response?.[0]?.predictions, null, 2));
-  }
 
   console.log(`  🎉 ${league.name}: ${teamRows.length} teams, ${standingRows.length} standings rows`);
 }
 
 async function main() {
-  console.log('🧪 API-Football small test run starting...');
+  console.log('🧪 API-Football full 8-league test run starting (season 2026-27)...\n');
   for (const league of LEAGUES) {
     try {
       await testLeague(league);
@@ -113,7 +105,7 @@ async function main() {
       console.error(`❌ ${league.name} failed:`, err.message);
     }
   }
-  console.log('\n✅ Test run complete. Check af_teams / af_standings in Supabase.');
+  console.log('\n✅ All 8 leagues tested. Check af_teams / af_standings in Supabase.');
 }
 
 main();
