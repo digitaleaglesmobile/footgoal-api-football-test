@@ -1,13 +1,13 @@
 // ============================================================
 // league-sync-v2.js — footgoal.co
-// Syncs 8 football leagues from API-Football (v3.football.api-sports.io)
+// Syncs football leagues from API-Football (v3.football.api-sports.io)
 // to Supabase + Webflow CMS
 // DRY_RUN mode: set to true to preview changes without writing to Webflow
 // ============================================================
 
-const DRY_RUN = true; // ⚠️ Keep this true until we've verified slug matching!
+const DRY_RUN = true; // ⚠️ Still true — one final check before real writes
 
-const SKIP_CHAMPIONS_LEAGUE = true; // Real 36-team phase not set until Aug 27, 2026 draw
+const SKIP_CHAMPIONS_LEAGUE = true;
 
 // ── ENV ──────────────────────────────────────────────────────
 const SUPABASE_URL  = process.env.SUPABASE_URL;
@@ -24,23 +24,21 @@ const WF = {
   TOP_SCORERS: '6a32a89633c9bd6bea624094',
 };
 
-// ── LEAGUE CONFIG — API-Football IDs, season 2026 ─────────────
+// ── LEAGUE CONFIG — Premier League only for now ────────────────
 const LEAGUES = [
   { code: 'PL',  name: 'Premier League',        api_id: 39,  webflow_id: '6a32a9cb63396a5393212f3a', season: 2026 },
-  { code: 'PD',  name: 'La Liga',                api_id: 140, webflow_id: '6a32a9cb63396a5393212f3e', season: 2026 },
-  { code: 'BL1', name: 'Bundesliga',             api_id: 78,  webflow_id: '6a32a9cb63396a5393212f40', season: 2026 },
-  { code: 'SA',  name: 'Serie A',                api_id: 135, webflow_id: '6a32a9cb63396a5393212f42', season: 2026 },
-  { code: 'DED', name: 'Eredivisie',             api_id: 88,  webflow_id: '6a32a9cb63396a5393212f44', season: 2026 },
-  { code: 'FL1', name: 'Ligue 1',                api_id: 61,  webflow_id: '6a32a9cb63396a5393212f46', season: 2026 },
-  { code: 'BSA', name: 'Brasileiro Série A',     api_id: 71,  webflow_id: '6a32a9cb63396a5393212f48', season: 2026 },
-  { code: 'CL',  name: 'UEFA Champions League',  api_id: 2,   webflow_id: '6a32a9cb63396a5393212f3c', season: 2026 },
+  // { code: 'PD',  name: 'La Liga',                api_id: 140, webflow_id: '6a32a9cb63396a5393212f3e', season: 2026 },
+  // { code: 'BL1', name: 'Bundesliga',             api_id: 78,  webflow_id: '6a32a9cb63396a5393212f40', season: 2026 },
+  // { code: 'SA',  name: 'Serie A',                api_id: 135, webflow_id: '6a32a9cb63396a5393212f42', season: 2026 },
+  // { code: 'DED', name: 'Eredivisie',             api_id: 88,  webflow_id: '6a32a9cb63396a5393212f44', season: 2026 },
+  // { code: 'FL1', name: 'Ligue 1',                api_id: 61,  webflow_id: '6a32a9cb63396a5393212f46', season: 2026 },
+  // { code: 'BSA', name: 'Brasileiro Série A',     api_id: 71,  webflow_id: '6a32a9cb63396a5393212f48', season: 2026 },
+  // { code: 'CL',  name: 'UEFA Champions League',  api_id: 2,   webflow_id: '6a32a9cb63396a5393212f3c', season: 2026 },
 ];
 
 const DELAY_MS = 1000;
 
 // ── MANUAL ALIASES ──────────────────────────────────────────────
-// Genuine nicknames/abbreviations no algorithm can guess.
-// Format: [normalized API-Football name] → [normalized Webflow name]
 const MANUAL_ALIASES = {
   'atletico paranaense': 'paranaense',
   'atletico mg': 'mineiro',
@@ -76,9 +74,6 @@ function getMatchTokens(normalized) {
   return new Set(all.filter(t => !/^\d+$/.test(t)));
 }
 
-// Matches if EITHER name's tokens are a subset of the other's —
-// handles both directions: "Feyenoord" ⊆ "Feyenoord Rotterdam" (API shorter)
-// AND "PSV Eindhoven" ⊇ "PSV" (API longer than Webflow's short name).
 function findTeamMatch(apiTeamName, webflowTeamsByNormalizedName) {
   const normalized = normalizeTeamName(apiTeamName);
 
@@ -131,7 +126,7 @@ async function apiFetch(path) {
   return data;
 }
 
-// ── SUPABASE (FIXED: now correctly specifies conflict columns) ─
+// ── SUPABASE ─────────────────────────────────────────────────
 async function supabaseUpsert(table, data, conflictCols) {
   if (!data || (Array.isArray(data) && data.length === 0)) return;
   const url = conflictCols
@@ -385,7 +380,7 @@ async function main() {
 
   for (const league of LEAGUES) {
     if (league.code === 'CL' && SKIP_CHAMPIONS_LEAGUE) {
-      console.log(`\n🏟️  Skipping: ${league.name} (qualifying rounds not yet resolved — league phase draw is Aug 27, 2026)`);
+      console.log(`\n🏟️  Skipping: ${league.name}`);
       continue;
     }
     console.log(`\n🏟️  Processing: ${league.name} (${league.code})`);
