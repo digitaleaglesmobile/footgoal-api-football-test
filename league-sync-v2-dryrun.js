@@ -1,11 +1,10 @@
 // ============================================================
 // league-sync-v2.js — footgoal.co
-// Syncs football leagues from API-Football (v3.football.api-sports.io)
-// to Supabase + Webflow CMS
-// DRY_RUN mode: set to true to preview changes without writing to Webflow
+// LIVE MODE — writes real data to your Webflow Teams & Standings
+// Premier League only for this first real run
 // ============================================================
 
-const DRY_RUN = true; // ⚠️ Still true — one final check before real writes
+const DRY_RUN = false; // ⚠️ LIVE — this will write to Webflow and publish
 
 const SKIP_CHAMPIONS_LEAGUE = true;
 
@@ -27,13 +26,6 @@ const WF = {
 // ── LEAGUE CONFIG — Premier League only for now ────────────────
 const LEAGUES = [
   { code: 'PL',  name: 'Premier League',        api_id: 39,  webflow_id: '6a32a9cb63396a5393212f3a', season: 2026 },
-  // { code: 'PD',  name: 'La Liga',                api_id: 140, webflow_id: '6a32a9cb63396a5393212f3e', season: 2026 },
-  // { code: 'BL1', name: 'Bundesliga',             api_id: 78,  webflow_id: '6a32a9cb63396a5393212f40', season: 2026 },
-  // { code: 'SA',  name: 'Serie A',                api_id: 135, webflow_id: '6a32a9cb63396a5393212f42', season: 2026 },
-  // { code: 'DED', name: 'Eredivisie',             api_id: 88,  webflow_id: '6a32a9cb63396a5393212f44', season: 2026 },
-  // { code: 'FL1', name: 'Ligue 1',                api_id: 61,  webflow_id: '6a32a9cb63396a5393212f46', season: 2026 },
-  // { code: 'BSA', name: 'Brasileiro Série A',     api_id: 71,  webflow_id: '6a32a9cb63396a5393212f48', season: 2026 },
-  // { code: 'CL',  name: 'UEFA Champions League',  api_id: 2,   webflow_id: '6a32a9cb63396a5393212f3c', season: 2026 },
 ];
 
 const DELAY_MS = 1000;
@@ -170,10 +162,6 @@ async function wfGetAllItems(collectionId) {
 }
 
 async function wfCreateItem(collectionId, fieldData) {
-  if (DRY_RUN) {
-    console.log(`  🔍 [DRY RUN] Would CREATE in ${collectionId}:`, fieldData.name || fieldData.slug);
-    return { id: `dry-run-${slugify(fieldData.name || 'item')}` };
-  }
   const res = await fetch(`https://api.webflow.com/v2/collections/${collectionId}/items`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${WEBFLOW_TOKEN}`, 'Content-Type': 'application/json', 'accept': 'application/json' },
@@ -185,10 +173,6 @@ async function wfCreateItem(collectionId, fieldData) {
 }
 
 async function wfUpdateItem(collectionId, itemId, fieldData) {
-  if (DRY_RUN) {
-    console.log(`  🔍 [DRY RUN] Would UPDATE ${itemId} in ${collectionId}:`, JSON.stringify(fieldData).slice(0, 150));
-    return { id: itemId };
-  }
   const res = await fetch(`https://api.webflow.com/v2/collections/${collectionId}/items/${itemId}`, {
     method: 'PATCH',
     headers: { 'Authorization': `Bearer ${WEBFLOW_TOKEN}`, 'Content-Type': 'application/json', 'accept': 'application/json' },
@@ -200,10 +184,6 @@ async function wfUpdateItem(collectionId, itemId, fieldData) {
 }
 
 async function wfPublishItems(collectionId, itemIds) {
-  if (DRY_RUN) {
-    console.log(`  🔍 [DRY RUN] Would PUBLISH ${itemIds.length} items in ${collectionId}`);
-    return;
-  }
   if (!itemIds || itemIds.length === 0) return;
   for (let i = 0; i < itemIds.length; i += 100) {
     const batch = itemIds.slice(i, i + 100);
@@ -274,14 +254,14 @@ async function syncTeams(league) {
       updatedIds.push(match.item.id);
     } else {
       unmatched++;
-      console.warn(`    ⚠️ NO MATCH for "${teamName}" — would CREATE new item`);
+      console.warn(`    ⚠️ NO MATCH for "${teamName}" — CREATING new item`);
       const created = await wfCreateItem(WF.TEAMS, fieldData);
       updatedIds.push(created.id);
     }
   }
 
   await supabaseUpsert('af_teams', supaRows, 'api_id');
-  console.log(`  📊 ${league.name}: ${matched} matched (${matchedByToken} via token match), ${unmatched} unmatched (would create new)`);
+  console.log(`  📊 ${league.name}: ${matched} matched (${matchedByToken} via token match), ${unmatched} unmatched (created new)`);
   return updatedIds;
 }
 
@@ -374,15 +354,11 @@ async function syncStandings(league) {
 
 // ── MAIN ──────────────────────────────────────────────────────
 async function main() {
-  console.log(`🔄 league-sync-v2.js starting... ${DRY_RUN ? '(DRY RUN — no Webflow writes)' : '⚠️ LIVE MODE'}`);
+  console.log(`🔄 league-sync-v2.js starting... ⚠️ LIVE MODE`);
   console.log(`⏰ ${new Date().toISOString()}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
   for (const league of LEAGUES) {
-    if (league.code === 'CL' && SKIP_CHAMPIONS_LEAGUE) {
-      console.log(`\n🏟️  Skipping: ${league.name}`);
-      continue;
-    }
     console.log(`\n🏟️  Processing: ${league.name} (${league.code})`);
     try {
       await syncTeams(league);
@@ -394,8 +370,7 @@ async function main() {
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   }
 
-  console.log('\n🎉 league-sync-v2.js complete!');
-  if (DRY_RUN) console.log('👉 This was a DRY RUN. Review the matched/unmatched counts above before setting DRY_RUN = false.');
+  console.log('\n🎉 league-sync-v2.js complete! Check your live Premier League page.');
 }
 
 main().catch(err => {
