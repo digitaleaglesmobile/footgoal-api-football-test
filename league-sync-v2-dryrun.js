@@ -39,13 +39,12 @@ const LEAGUES = [
 const DELAY_MS = 1000;
 
 // ── MANUAL ALIASES ──────────────────────────────────────────────
-// For genuinely irregular name mismatches no algorithm can guess —
-// e.g. Brazilian clubs where API-Football uses "Atletico" but your
-// site uses the Portuguese abbreviation "CA" (Clube Atlético).
-// Format: [what API-Football calls it, normalized] → [what your Webflow site calls it, normalized]
+// Genuine nicknames/abbreviations no algorithm can guess.
+// Format: [normalized API-Football name] → [normalized Webflow name]
 const MANUAL_ALIASES = {
   'atletico paranaense': 'paranaense',
   'atletico mg': 'mineiro',
+  'inter': 'internazionale milano',
 };
 
 // ── HELPERS ───────────────────────────────────────────────────
@@ -58,9 +57,6 @@ function slugify(str) {
     .trim().replace(/\s+/g, '-').replace(/-+/g, '-');
 }
 
-// Strips accents, club-entity prefixes/suffixes, and connector words.
-// Expanded to cover more European naming conventions (German fsv/tsv,
-// numbered-founding-year clubs, etc.)
 function normalizeTeamName(name) {
   let n = name
     .toLowerCase()
@@ -71,19 +67,18 @@ function normalizeTeamName(name) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // Apply manual alias if this exact normalized name has a known override
   if (MANUAL_ALIASES[n]) return MANUAL_ALIASES[n];
   return n;
 }
 
-// Splits normalized name into tokens, separating alpha tokens (must match)
-// from pure-numeric tokens (ignored for matching — handles "Schalke 04" vs
-// "Schalke", "Bochum 1848" vs "Bochum", "Mainz 05" vs "Mainz", etc.)
 function getMatchTokens(normalized) {
   const all = normalized.split(' ').filter(Boolean);
   return new Set(all.filter(t => !/^\d+$/.test(t)));
 }
 
+// Matches if EITHER name's tokens are a subset of the other's —
+// handles both directions: "Feyenoord" ⊆ "Feyenoord Rotterdam" (API shorter)
+// AND "PSV Eindhoven" ⊇ "PSV" (API longer than Webflow's short name).
 function findTeamMatch(apiTeamName, webflowTeamsByNormalizedName) {
   const normalized = normalizeTeamName(apiTeamName);
 
@@ -97,8 +92,10 @@ function findTeamMatch(apiTeamName, webflowTeamsByNormalizedName) {
   const candidates = [];
   for (const [wfNormalized, item] of webflowTeamsByNormalizedName.entries()) {
     const wfTokens = getMatchTokens(wfNormalized);
-    const isSubset = [...apiTokens].every(t => wfTokens.has(t));
-    if (isSubset) candidates.push(item);
+    if (wfTokens.size === 0) continue;
+    const apiSubsetOfWf = [...apiTokens].every(t => wfTokens.has(t));
+    const wfSubsetOfApi = [...wfTokens].every(t => apiTokens.has(t));
+    if (apiSubsetOfWf || wfSubsetOfApi) candidates.push(item);
   }
   if (candidates.length === 1) {
     return { item: candidates[0], method: 'token-subset' };
@@ -134,10 +131,13 @@ async function apiFetch(path) {
   return data;
 }
 
-// ── SUPABASE ─────────────────────────────────────────────────
-async function supabaseUpsert(table, data) {
+// ── SUPABASE (FIXED: now correctly specifies conflict columns) ─
+async function supabaseUpsert(table, data, conflictCols) {
   if (!data || (Array.isArray(data) && data.length === 0)) return;
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+  const url = conflictCols
+    ? `${SUPABASE_URL}/rest/v1/${table}?on_conflict=${conflictCols}`
+    : `${SUPABASE_URL}/rest/v1/${table}`;
+  const res = await fetch(url, {
     method: 'POST',
     headers: {
       'apikey': SUPABASE_KEY,
@@ -285,7 +285,7 @@ async function syncTeams(league) {
     }
   }
 
-  await supabaseUpsert('af_teams', supaRows);
+  await supabaseUpsert('af_teams', supaRows, 'api_id');
   console.log(`  📊 ${league.name}: ${matched} matched (${matchedByToken} via token match), ${unmatched} unmatched (would create new)`);
   return updatedIds;
 }
@@ -371,7 +371,7 @@ async function syncStandings(league) {
     }
   }
 
-  await supabaseUpsert('af_standings', supaRows);
+  await supabaseUpsert('af_standings', supaRows, 'league_code,season,team_id');
   await wfPublishItems(WF.STANDINGS, updatedIds);
   console.log(`  ✅ Standings done: ${updatedIds.length} items`);
   return updatedIds;
