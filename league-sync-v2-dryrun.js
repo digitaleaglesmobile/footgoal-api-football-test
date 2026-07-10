@@ -7,10 +7,7 @@
 
 const DRY_RUN = true; // ⚠️ Keep this true until we've verified slug matching!
 
-// Champions League qualifying rounds return ~150 clubs from smaller domestic leagues
-// that mostly won't qualify. The real 36-team league phase isn't set until the
-// Aug 27, 2026 draw. Skip syncing CL teams until then — set to false after that date.
-const SKIP_CHAMPIONS_LEAGUE = true;
+const SKIP_CHAMPIONS_LEAGUE = true; // Real 36-team phase not set until Aug 27, 2026 draw
 
 // ── ENV ──────────────────────────────────────────────────────
 const SUPABASE_URL  = process.env.SUPABASE_URL;
@@ -41,6 +38,16 @@ const LEAGUES = [
 
 const DELAY_MS = 1000;
 
+// ── MANUAL ALIASES ──────────────────────────────────────────────
+// For genuinely irregular name mismatches no algorithm can guess —
+// e.g. Brazilian clubs where API-Football uses "Atletico" but your
+// site uses the Portuguese abbreviation "CA" (Clube Atlético).
+// Format: [what API-Football calls it, normalized] → [what your Webflow site calls it, normalized]
+const MANUAL_ALIASES = {
+  'atletico paranaense': 'paranaense',
+  'atletico mg': 'mineiro',
+};
+
 // ── HELPERS ───────────────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -51,14 +58,30 @@ function slugify(str) {
     .trim().replace(/\s+/g, '-').replace(/-+/g, '-');
 }
 
+// Strips accents, club-entity prefixes/suffixes, and connector words.
+// Expanded to cover more European naming conventions (German fsv/tsv,
+// numbered-founding-year clubs, etc.)
 function normalizeTeamName(name) {
-  return name
+  let n = name
     .toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/\b(fc|afc|cf|sc|ac|rc|rcd|cd|ud|sv|vfl|vfb|tsg|ssc|us|as|ss|club|de|del|la|le|el|los|las|a)\b\.?/gi, '')
+    .replace(/[.\-']/g, ' ')
+    .replace(/\b(fc|afc|cf|sc|ac|rc|rcd|cd|ud|sv|vfl|vfb|tsg|ssc|us|as|ss|fsv|tsv|spvgg|bsc|bv|vfr|fk|nk|sk|gnk|ca|club|de|del|la|le|el|los|las|a|do|da)\b/gi, '')
     .replace(/[^a-z0-9\s]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+
+  // Apply manual alias if this exact normalized name has a known override
+  if (MANUAL_ALIASES[n]) return MANUAL_ALIASES[n];
+  return n;
+}
+
+// Splits normalized name into tokens, separating alpha tokens (must match)
+// from pure-numeric tokens (ignored for matching — handles "Schalke 04" vs
+// "Schalke", "Bochum 1848" vs "Bochum", "Mainz 05" vs "Mainz", etc.)
+function getMatchTokens(normalized) {
+  const all = normalized.split(' ').filter(Boolean);
+  return new Set(all.filter(t => !/^\d+$/.test(t)));
 }
 
 function findTeamMatch(apiTeamName, webflowTeamsByNormalizedName) {
@@ -68,12 +91,12 @@ function findTeamMatch(apiTeamName, webflowTeamsByNormalizedName) {
     return { item: webflowTeamsByNormalizedName.get(normalized), method: 'exact' };
   }
 
-  const apiTokens = new Set(normalized.split(' ').filter(Boolean));
+  const apiTokens = getMatchTokens(normalized);
   if (apiTokens.size === 0) return null;
 
   const candidates = [];
   for (const [wfNormalized, item] of webflowTeamsByNormalizedName.entries()) {
-    const wfTokens = new Set(wfNormalized.split(' ').filter(Boolean));
+    const wfTokens = getMatchTokens(wfNormalized);
     const isSubset = [...apiTokens].every(t => wfTokens.has(t));
     if (isSubset) candidates.push(item);
   }
@@ -359,8 +382,6 @@ async function main() {
   console.log(`🔄 league-sync-v2.js starting... ${DRY_RUN ? '(DRY RUN — no Webflow writes)' : '⚠️ LIVE MODE'}`);
   console.log(`⏰ ${new Date().toISOString()}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-  const summary = [];
 
   for (const league of LEAGUES) {
     if (league.code === 'CL' && SKIP_CHAMPIONS_LEAGUE) {
