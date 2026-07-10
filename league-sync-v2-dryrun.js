@@ -7,6 +7,11 @@
 
 const DRY_RUN = true; // ⚠️ Keep this true until we've verified slug matching!
 
+// Champions League qualifying rounds return ~150 clubs from smaller domestic leagues
+// that mostly won't qualify. The real 36-team league phase isn't set until the
+// Aug 27, 2026 draw. Skip syncing CL teams until then — set to false after that date.
+const SKIP_CHAMPIONS_LEAGUE = true;
+
 // ── ENV ──────────────────────────────────────────────────────
 const SUPABASE_URL  = process.env.SUPABASE_URL;
 const SUPABASE_KEY  = process.env.SUPABASE_KEY;
@@ -46,23 +51,16 @@ function slugify(str) {
     .trim().replace(/\s+/g, '-').replace(/-+/g, '-');
 }
 
-// Strips accents, club-entity suffixes, AND common connector words
-// so "Atletico Madrid" ↔ "Club Atlético de Madrid" and "Malaga" ↔ "Málaga CF" both match.
 function normalizeTeamName(name) {
   return name
     .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // strip accents: á→a, é→e, ñ→n, etc.
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/\b(fc|afc|cf|sc|ac|rc|rcd|cd|ud|sv|vfl|vfb|tsg|ssc|us|as|ss|club|de|del|la|le|el|los|las|a)\b\.?/gi, '')
     .replace(/[^a-z0-9\s]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-// Finds the best Webflow match for an API team name:
-// 1. Exact normalized match (handles suffix/accent differences)
-// 2. Token-subset match — if every word in the API name also appears in a Webflow
-//    name's word set, treat it as a match. Only accepted if exactly ONE candidate
-//    qualifies, to avoid false positives on short/common words.
 function findTeamMatch(apiTeamName, webflowTeamsByNormalizedName) {
   const normalized = normalizeTeamName(apiTeamName);
 
@@ -321,7 +319,6 @@ async function syncStandings(league) {
       goals_against: entry.all.goals.against,
       points: entry.points,
       updated_at: new Date().toISOString()
-      // NOTE: "form" removed here — af_standings table doesn't have that column
     });
 
     const fieldData = {
@@ -363,7 +360,13 @@ async function main() {
   console.log(`⏰ ${new Date().toISOString()}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
+  const summary = [];
+
   for (const league of LEAGUES) {
+    if (league.code === 'CL' && SKIP_CHAMPIONS_LEAGUE) {
+      console.log(`\n🏟️  Skipping: ${league.name} (qualifying rounds not yet resolved — league phase draw is Aug 27, 2026)`);
+      continue;
+    }
     console.log(`\n🏟️  Processing: ${league.name} (${league.code})`);
     try {
       await syncTeams(league);
