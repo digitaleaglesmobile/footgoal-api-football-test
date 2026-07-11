@@ -1,10 +1,10 @@
 // ============================================================
 // league-sync-v2.js — footgoal.co
-// Now includes Matches (fixtures) syncing, in addition to Teams/Standings
-// DRY_RUN mode: set to true to preview changes without writing to Webflow
+// LIVE MODE — writes real data to Webflow: Teams, Standings, Matches
+// Premier League only for this rollout
 // ============================================================
 
-const DRY_RUN = true; // ⚠️ Testing matches sync first — teams/standings already proven live
+const DRY_RUN = false; // ⚠️ LIVE — this will write to Webflow and publish
 
 // ── ENV ──────────────────────────────────────────────────────
 const SUPABASE_URL  = process.env.SUPABASE_URL;
@@ -94,7 +94,6 @@ function getFormString(form) {
   return form.slice(-5);
 }
 
-// Maps API-Football's fixture status codes to your site's status field
 function mapMatchStatus(shortStatus) {
   const finished = ['FT', 'AET', 'PEN'];
   const live = ['1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE'];
@@ -270,7 +269,7 @@ async function syncTeams(league) {
       updatedIds.push(match.item.id);
     } else {
       unmatched++;
-      console.warn(`    ⚠️ NO MATCH for "${teamName}" — would CREATE new item`);
+      console.warn(`    ⚠️ NO MATCH for "${teamName}" — CREATING new item`);
       const created = await wfCreateItem(WF.TEAMS, fieldData);
       updatedIds.push(created.id);
     }
@@ -367,7 +366,7 @@ async function syncStandings(league) {
   return updatedIds;
 }
 
-// ── SYNC MATCHES (NEW) ──────────────────────────────────────────
+// ── SYNC MATCHES ──────────────────────────────────────────────
 async function syncMatches(league) {
   console.log(`\n  ⚽ Syncing matches for ${league.name}...`);
 
@@ -465,8 +464,7 @@ async function main() {
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   }
 
-  console.log('\n🎉 league-sync-v2.js complete!');
-  if (DRY_RUN) console.log('👉 This was a DRY RUN. Review the matches summary above before setting DRY_RUN = false.');
+  console.log('\n🎉 league-sync-v2.js complete! Check your live Premier League page.');
 }
 
 main().catch(err => {
