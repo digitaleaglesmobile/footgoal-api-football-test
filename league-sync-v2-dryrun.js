@@ -1,9 +1,9 @@
 // ============================================================
 // league-sync-v2.js — footgoal.co
-// DRY RUN — verifying Serie A, Eredivisie, Ligue 1 after manual additions
+// LIVE MODE — Serie A, Eredivisie, Ligue 1 (with Troyes alias fix)
 // ============================================================
 
-const DRY_RUN = true;
+const DRY_RUN = false;
 
 // ── ENV ──────────────────────────────────────────────────────
 const SUPABASE_URL  = process.env.SUPABASE_URL;
@@ -30,13 +30,14 @@ const LEAGUES = [
 const DELAY_MS = 1000;
 const WEBFLOW_WRITE_DELAY_MS = 1000;
 
-// ── MANUAL ALIASES (includes the Lyon/Rennes fix) ─────────────
+// ── MANUAL ALIASES (includes new Troyes fix) ─────────────
 const MANUAL_ALIASES = {
   'atletico paranaense': 'paranaense',
   'atletico mg': 'mineiro',
   'inter': 'internazionale milano',
   'lyon': 'olympique lyonnais',
   'rennes': 'stade rennais',
+  'estac troyes': 'es troyes',
 };
 
 // ── HELPERS ───────────────────────────────────────────────────
@@ -170,10 +171,6 @@ async function wfGetAllItems(collectionId) {
 
 async function wfCreateItem(collectionId, fieldData, retries) {
   if (retries === undefined) retries = 3;
-  if (DRY_RUN) {
-    console.log('[DRY RUN] Would CREATE:', fieldData.name || fieldData.slug);
-    return { id: 'dry-run-' + slugify(fieldData.name || 'item') };
-  }
   var res = await fetch('https://api.webflow.com/v2/collections/' + collectionId + '/items', {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + WEBFLOW_TOKEN, 'Content-Type': 'application/json', accept: 'application/json' },
@@ -198,10 +195,6 @@ async function wfCreateItem(collectionId, fieldData, retries) {
 
 async function wfUpdateItem(collectionId, itemId, fieldData, retries) {
   if (retries === undefined) retries = 3;
-  if (DRY_RUN) {
-    console.log('[DRY RUN] Would UPDATE ' + itemId);
-    return { id: itemId };
-  }
   var res = await fetch('https://api.webflow.com/v2/collections/' + collectionId + '/items/' + itemId, {
     method: 'PATCH',
     headers: { Authorization: 'Bearer ' + WEBFLOW_TOKEN, 'Content-Type': 'application/json', accept: 'application/json' },
@@ -225,10 +218,6 @@ async function wfUpdateItem(collectionId, itemId, fieldData, retries) {
 }
 
 async function wfPublishItems(collectionId, itemIds) {
-  if (DRY_RUN) {
-    console.log('[DRY RUN] Would PUBLISH ' + itemIds.length + ' items');
-    return;
-  }
   if (!itemIds || itemIds.length === 0) return;
   for (var i = 0; i < itemIds.length; i += 100) {
     var batch = itemIds.slice(i, i + 100);
@@ -300,7 +289,7 @@ async function syncTeams(league) {
       updatedIds.push(match.item.id);
     } else {
       unmatched++;
-      console.warn('NO MATCH for "' + teamName + '" - would CREATE new item');
+      console.warn('NO MATCH for "' + teamName + '" - CREATING new item');
       var created = await wfCreateItem(WF.TEAMS, fieldData);
       updatedIds.push(created.id);
     }
@@ -505,7 +494,6 @@ async function main() {
   }
 
   console.log('league-sync-v2.js complete!');
-  if (DRY_RUN) console.log('This was a DRY RUN. Review results before setting DRY_RUN = false.');
 }
 
 main().catch(function(err) {
