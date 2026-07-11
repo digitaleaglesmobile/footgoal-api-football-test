@@ -27,6 +27,7 @@ const LEAGUES = [
 ];
 
 const DELAY_MS = 1000;
+const WEBFLOW_WRITE_DELAY_MS = 350; // Pause between each Webflow write to avoid rate limits
 
 // ── MANUAL ALIASES ──────────────────────────────────────────────
 const MANUAL_ALIASES = {
@@ -167,7 +168,7 @@ async function wfGetAllItems(collectionId) {
   return items;
 }
 
-async function wfCreateItem(collectionId, fieldData) {
+async function wfCreateItem(collectionId, fieldData, retries = 3) {
   if (DRY_RUN) {
     console.log(`  🔍 [DRY RUN] Would CREATE in ${collectionId}:`, fieldData.name || fieldData.slug);
     return { id: `dry-run-${slugify(fieldData.name || 'item')}` };
@@ -177,12 +178,19 @@ async function wfCreateItem(collectionId, fieldData) {
     headers: { 'Authorization': `Bearer ${WEBFLOW_TOKEN}`, 'Content-Type': 'application/json', 'accept': 'application/json' },
     body: JSON.stringify({ fieldData, isDraft: true })
   });
-  if (res.status === 429) { await sleep(60000); return wfCreateItem(collectionId, fieldData); }
-  if (!res.ok) throw new Error(`Webflow CREATE: ${await res.text()}`);
+  if (res.status === 429) { await sleep(60000); return wfCreateItem(collectionId, fieldData, retries); }
+  if (!res.ok) {
+    if (retries > 0) {
+      console.warn(`    ⚠️ Webflow error, retrying (${retries} left)...`);
+      await sleep(2000);
+      return wfCreateItem(collectionId, fieldData, retries - 1);
+    }
+    throw new Error(`Webflow CREATE: ${await res.text()}`);
+  }
   return res.json();
 }
 
-async function wfUpdateItem(collectionId, itemId, fieldData) {
+async function wfUpdateItem(collectionId, itemId, fieldData, retries = 3) {
   if (DRY_RUN) {
     console.log(`  🔍 [DRY RUN] Would UPDATE ${itemId} in ${collectionId}:`, JSON.stringify(fieldData).slice(0, 150));
     return { id: itemId };
@@ -192,8 +200,15 @@ async function wfUpdateItem(collectionId, itemId, fieldData) {
     headers: { 'Authorization': `Bearer ${WEBFLOW_TOKEN}`, 'Content-Type': 'application/json', 'accept': 'application/json' },
     body: JSON.stringify({ fieldData })
   });
-  if (res.status === 429) { await sleep(60000); return wfUpdateItem(collectionId, itemId, fieldData); }
-  if (!res.ok) throw new Error(`Webflow PATCH: ${await res.text()}`);
+  if (res.status === 429) { await sleep(60000); return wfUpdateItem(collectionId, itemId, fieldData, retries); }
+  if (!res.ok) {
+    if (retries > 0) {
+      console.warn(`    ⚠️ Webflow error, retrying (${retries} left)...`);
+      await sleep(2000);
+      return wfUpdateItem(collectionId, itemId, fieldData, retries - 1);
+    }
+    throw new Error(`Webflow PATCH: ${await res.text()}`);
+  }
   return res.json();
 }
 
@@ -211,6 +226,7 @@ async function wfPublishItems(collectionId, itemIds) {
       body: JSON.stringify({ itemIds: batch })
     });
     if (!res.ok) console.warn(`  ⚠️ Publish warning: ${await res.text()}`);
+    await sleep(WEBFLOW_WRITE_DELAY_MS);
   }
 }
 
@@ -366,7 +382,7 @@ async function syncStandings(league) {
   return updatedIds;
 }
 
-// ── SYNC MATCHES ──────────────────────────────────────────────
+// ── SYNC MATCHES (now with throttling + per-item error handling) ─
 async function syncMatches(league) {
   console.log(`\n  ⚽ Syncing matches for ${league.name}...`);
 
@@ -391,10 +407,13 @@ async function syncMatches(league) {
     if (apiId) matchByApiId.set(String(apiId), m);
   }
 
-  let matched = 0, created = 0, skipped = 0;
+  let matched = 0, created = 0, skipped = 0, failed = 0;
   const updatedIds = [];
+  const total = apiMatches.length;
+  let processed = 0;
 
   for (const m of apiMatches) {
+    processed++;
     const homeName = m.teams.home.name;
     const awayName = m.teams.away.name;
 
@@ -427,20 +446,28 @@ async function syncMatches(league) {
       'api-fixture-id': m.fixture.id,
     };
 
-    const existingMatch = matchByApiId.get(String(m.fixture.id));
-    if (existingMatch) {
-      matched++;
-      await wfUpdateItem(WF.MATCHES, existingMatch.id, fieldData);
-      updatedIds.push(existingMatch.id);
-    } else {
-      created++;
-      const createdItem = await wfCreateItem(WF.MATCHES, fieldData);
-      updatedIds.push(createdItem.id);
+    try {
+      const existingMatch = matchByApiId.get(String(m.fixture.id));
+      if (existingMatch) {
+        matched++;
+        await wfUpdateItem(WF.MATCHES, existingMatch.id, fieldData);
+        updatedIds.push(existingMatch.id);
+      } else {
+        created++;
+        const createdItem = await wfCreateItem(WF.MATCHES, fieldData);
+        updatedIds.push(createdItem.id);
+      }
+    } catch (err) {
+      failed++;
+      console.error(`    ❌ Failed fixture "${fieldData.name}": ${err.message}`);
     }
+
+    await sleep(WEBFLOW_WRITE_DELAY_MS);
+    if (processed % 50 === 0) console.log(`    ...${processed}/${total} processed`);
   }
 
   await wfPublishItems(WF.MATCHES, updatedIds);
-  console.log(`  📊 ${league.name} matches: ${matched} updated, ${created} created, ${skipped} skipped (team mismatch)`);
+  console.log(`  📊 ${league.name} matches: ${matched} updated, ${created} created, ${skipped} skipped, ${failed} failed`);
   console.log(`  ✅ Matches done: ${updatedIds.length} items`);
   return updatedIds;
 }
