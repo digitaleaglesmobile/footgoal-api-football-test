@@ -1,6 +1,7 @@
 // ============================================================
 // league-sync-v2.js — footgoal.co
-// LIVE MODE — Brasileirão (fully verified clean, 0 skipped)
+// PRODUCTION — LIVE MODE — all 7 active leagues
+// Champions League excluded until Aug 27, 2026 draw
 // ============================================================
 
 const DRY_RUN = false;
@@ -20,9 +21,15 @@ const WF = {
   TOP_SCORERS: '6a32a89633c9bd6bea624094',
 };
 
-// ── LEAGUE CONFIG — Brasileirão ────────────────
+// ── LEAGUE CONFIG — all 7 active leagues ────────────
 const LEAGUES = [
-  { code: 'BSA', name: 'Brasileiro Série A', api_id: 71, webflow_id: '6a32a9cb63396a5393212f48', season: 2026 },
+  { code: 'PL',  name: 'Premier League',        api_id: 39,  webflow_id: '6a32a9cb63396a5393212f3a', season: 2026 },
+  { code: 'PD',  name: 'La Liga',                api_id: 140, webflow_id: '6a32a9cb63396a5393212f3e', season: 2026 },
+  { code: 'BL1', name: 'Bundesliga',             api_id: 78,  webflow_id: '6a32a9cb63396a5393212f40', season: 2026 },
+  { code: 'SA',  name: 'Serie A',                api_id: 135, webflow_id: '6a32a9cb63396a5393212f42', season: 2026 },
+  { code: 'DED', name: 'Eredivisie',             api_id: 88,  webflow_id: '6a32a9cb63396a5393212f44', season: 2026 },
+  { code: 'FL1', name: 'Ligue 1',                api_id: 61,  webflow_id: '6a32a9cb63396a5393212f46', season: 2026 },
+  { code: 'BSA', name: 'Brasileiro Série A',     api_id: 71,  webflow_id: '6a32a9cb63396a5393212f48', season: 2026 },
 ];
 
 const DELAY_MS = 1000;
@@ -462,7 +469,7 @@ async function syncMatches(league) {
     }
 
     await sleep(WEBFLOW_WRITE_DELAY_MS);
-    if (processed % 50 === 0) console.log('...' + processed + '/' + total + ' processed');
+    if (processed % 50 === 0) console.log('...' + processed + '/' + total + ' processed for ' + league.name);
   }
 
   await wfPublishItems(WF.MATCHES, updatedIds);
@@ -486,9 +493,10 @@ async function main() {
     } catch (err) {
       console.error(league.name + ' failed: ' + err.message);
     }
+    console.log('---');
   }
 
-  console.log('league-sync-v2.js complete!');
+  console.log('league-sync-v2.js complete! All leagues processed.');
 }
 
 main().catch(function(err) {
