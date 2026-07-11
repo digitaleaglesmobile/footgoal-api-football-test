@@ -1,12 +1,10 @@
 // ============================================================
 // league-sync-v2.js — footgoal.co
-// LIVE MODE — writes real data to your Webflow Teams & Standings
-// Premier League only for this first real run
+// Now includes Matches (fixtures) syncing, in addition to Teams/Standings
+// DRY_RUN mode: set to true to preview changes without writing to Webflow
 // ============================================================
 
-const DRY_RUN = false; // ⚠️ LIVE — this will write to Webflow and publish
-
-const SKIP_CHAMPIONS_LEAGUE = true;
+const DRY_RUN = true; // ⚠️ Testing matches sync first — teams/standings already proven live
 
 // ── ENV ──────────────────────────────────────────────────────
 const SUPABASE_URL  = process.env.SUPABASE_URL;
@@ -96,6 +94,15 @@ function getFormString(form) {
   return form.slice(-5);
 }
 
+// Maps API-Football's fixture status codes to your site's status field
+function mapMatchStatus(shortStatus) {
+  const finished = ['FT', 'AET', 'PEN'];
+  const live = ['1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE'];
+  if (finished.includes(shortStatus)) return 'Played';
+  if (live.includes(shortStatus)) return 'Live';
+  return 'Upcoming';
+}
+
 // ── API-FOOTBALL ──────────────────────────────────────────────
 async function apiFetch(path) {
   await sleep(DELAY_MS);
@@ -162,6 +169,10 @@ async function wfGetAllItems(collectionId) {
 }
 
 async function wfCreateItem(collectionId, fieldData) {
+  if (DRY_RUN) {
+    console.log(`  🔍 [DRY RUN] Would CREATE in ${collectionId}:`, fieldData.name || fieldData.slug);
+    return { id: `dry-run-${slugify(fieldData.name || 'item')}` };
+  }
   const res = await fetch(`https://api.webflow.com/v2/collections/${collectionId}/items`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${WEBFLOW_TOKEN}`, 'Content-Type': 'application/json', 'accept': 'application/json' },
@@ -173,6 +184,10 @@ async function wfCreateItem(collectionId, fieldData) {
 }
 
 async function wfUpdateItem(collectionId, itemId, fieldData) {
+  if (DRY_RUN) {
+    console.log(`  🔍 [DRY RUN] Would UPDATE ${itemId} in ${collectionId}:`, JSON.stringify(fieldData).slice(0, 150));
+    return { id: itemId };
+  }
   const res = await fetch(`https://api.webflow.com/v2/collections/${collectionId}/items/${itemId}`, {
     method: 'PATCH',
     headers: { 'Authorization': `Bearer ${WEBFLOW_TOKEN}`, 'Content-Type': 'application/json', 'accept': 'application/json' },
@@ -184,6 +199,10 @@ async function wfUpdateItem(collectionId, itemId, fieldData) {
 }
 
 async function wfPublishItems(collectionId, itemIds) {
+  if (DRY_RUN) {
+    console.log(`  🔍 [DRY RUN] Would PUBLISH ${itemIds.length} items in ${collectionId}`);
+    return;
+  }
   if (!itemIds || itemIds.length === 0) return;
   for (let i = 0; i < itemIds.length; i += 100) {
     const batch = itemIds.slice(i, i + 100);
@@ -245,23 +264,20 @@ async function syncTeams(league) {
     const match = findTeamMatch(teamName, byNormalizedName);
     if (match) {
       matched++;
-      if (match.method === 'token-subset') {
-        matchedByToken++;
-        console.log(`    🔗 Token match: "${teamName}" → "${match.item.fieldData.name}"`);
-      }
+      if (match.method === 'token-subset') matchedByToken++;
       const updateData = { ...fieldData, name: match.item.fieldData.name, slug: match.item.fieldData.slug };
       await wfUpdateItem(WF.TEAMS, match.item.id, updateData);
       updatedIds.push(match.item.id);
     } else {
       unmatched++;
-      console.warn(`    ⚠️ NO MATCH for "${teamName}" — CREATING new item`);
+      console.warn(`    ⚠️ NO MATCH for "${teamName}" — would CREATE new item`);
       const created = await wfCreateItem(WF.TEAMS, fieldData);
       updatedIds.push(created.id);
     }
   }
 
   await supabaseUpsert('af_teams', supaRows, 'api_id');
-  console.log(`  📊 ${league.name}: ${matched} matched (${matchedByToken} via token match), ${unmatched} unmatched (created new)`);
+  console.log(`  📊 ${league.name} teams: ${matched} matched (${matchedByToken} via token match), ${unmatched} unmatched`);
   return updatedIds;
 }
 
@@ -295,7 +311,6 @@ async function syncStandings(league) {
 
   for (const entry of table) {
     const teamName = entry.team.name;
-
     const match = findTeamMatch(teamName, teamByNormalizedName);
     if (!match) {
       console.warn(`    ⚠️ No Webflow team found for: ${teamName}`);
@@ -352,9 +367,88 @@ async function syncStandings(league) {
   return updatedIds;
 }
 
+// ── SYNC MATCHES (NEW) ──────────────────────────────────────────
+async function syncMatches(league) {
+  console.log(`\n  ⚽ Syncing matches for ${league.name}...`);
+
+  const matchesData = await apiFetch(`/fixtures?league=${league.api_id}&season=${league.season}`);
+  const apiMatches = matchesData.response || [];
+
+  if (apiMatches.length === 0) {
+    console.log(`  ⚠️ No fixtures returned yet for ${league.name}`);
+    return [];
+  }
+
+  const wfTeams = await wfGetAllItems(WF.TEAMS);
+  const teamByNormalizedName = new Map();
+  for (const t of wfTeams) {
+    if (t.fieldData?.name) teamByNormalizedName.set(normalizeTeamName(t.fieldData.name), t);
+  }
+
+  const wfMatches = await wfGetAllItems(WF.MATCHES);
+  const matchByApiId = new Map();
+  for (const m of wfMatches) {
+    const apiId = m.fieldData?.['api-fixture-id'];
+    if (apiId) matchByApiId.set(String(apiId), m);
+  }
+
+  let matched = 0, created = 0, skipped = 0;
+  const updatedIds = [];
+
+  for (const m of apiMatches) {
+    const homeName = m.teams.home.name;
+    const awayName = m.teams.away.name;
+
+    const homeMatch = findTeamMatch(homeName, teamByNormalizedName);
+    const awayMatch = findTeamMatch(awayName, teamByNormalizedName);
+
+    if (!homeMatch || !awayMatch) {
+      skipped++;
+      console.warn(`    ⚠️ Skipping fixture — no team match for "${!homeMatch ? homeName : awayName}"`);
+      continue;
+    }
+
+    const status = mapMatchStatus(m.fixture.status.short);
+    const roundLabel = m.league.round || '';
+
+    const fieldData = {
+      name: `${homeMatch.item.fieldData.name} vs ${awayMatch.item.fieldData.name}`,
+      slug: `${slugify(homeMatch.item.fieldData.name)}-vs-${slugify(awayMatch.item.fieldData.name)}-${m.fixture.id}`,
+      league: league.webflow_id,
+      'home-team': homeMatch.item.id,
+      'away-team': awayMatch.item.id,
+      'home-badge': homeMatch.item.fieldData.badge || null,
+      'away-badge': awayMatch.item.fieldData.badge || null,
+      'match-date': m.fixture.date,
+      'round-label': roundLabel,
+      'home-score': m.goals.home,
+      'away-score': m.goals.away,
+      status,
+      venue: m.fixture.venue?.name || '',
+      'api-fixture-id': m.fixture.id,
+    };
+
+    const existingMatch = matchByApiId.get(String(m.fixture.id));
+    if (existingMatch) {
+      matched++;
+      await wfUpdateItem(WF.MATCHES, existingMatch.id, fieldData);
+      updatedIds.push(existingMatch.id);
+    } else {
+      created++;
+      const createdItem = await wfCreateItem(WF.MATCHES, fieldData);
+      updatedIds.push(createdItem.id);
+    }
+  }
+
+  await wfPublishItems(WF.MATCHES, updatedIds);
+  console.log(`  📊 ${league.name} matches: ${matched} updated, ${created} created, ${skipped} skipped (team mismatch)`);
+  console.log(`  ✅ Matches done: ${updatedIds.length} items`);
+  return updatedIds;
+}
+
 // ── MAIN ──────────────────────────────────────────────────────
 async function main() {
-  console.log(`🔄 league-sync-v2.js starting... ⚠️ LIVE MODE`);
+  console.log(`🔄 league-sync-v2.js starting... ${DRY_RUN ? '(DRY RUN — no Webflow writes)' : '⚠️ LIVE MODE'}`);
   console.log(`⏰ ${new Date().toISOString()}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
@@ -363,6 +457,7 @@ async function main() {
     try {
       await syncTeams(league);
       await syncStandings(league);
+      await syncMatches(league);
       console.log(`  🎉 ${league.name} complete`);
     } catch (err) {
       console.error(`  ❌ ${league.name} failed: ${err.message}`);
@@ -370,7 +465,8 @@ async function main() {
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   }
 
-  console.log('\n🎉 league-sync-v2.js complete! Check your live Premier League page.');
+  console.log('\n🎉 league-sync-v2.js complete!');
+  if (DRY_RUN) console.log('👉 This was a DRY RUN. Review the matches summary above before setting DRY_RUN = false.');
 }
 
 main().catch(err => {
