@@ -1,10 +1,9 @@
 // ============================================================
 // league-sync-v2.js — footgoal.co
-// LIVE MODE — writes real data to Webflow: Teams, Standings, Matches
-// Premier League only for this rollout
+// DRY RUN — testing La Liga before going live
 // ============================================================
 
-const DRY_RUN = false;
+const DRY_RUN = true;
 
 // ── ENV ──────────────────────────────────────────────────────
 const SUPABASE_URL  = process.env.SUPABASE_URL;
@@ -21,9 +20,9 @@ const WF = {
   TOP_SCORERS: '6a32a89633c9bd6bea624094',
 };
 
-// ── LEAGUE CONFIG ────────────────
+// ── LEAGUE CONFIG — La Liga added ────────────────
 const LEAGUES = [
-  { code: 'PL', name: 'Premier League', api_id: 39, webflow_id: '6a32a9cb63396a5393212f3a', season: 2026 },
+  { code: 'PD', name: 'La Liga', api_id: 140, webflow_id: '6a32a9cb63396a5393212f3e', season: 2026 },
 ];
 
 const DELAY_MS = 1000;
@@ -294,7 +293,7 @@ async function syncTeams(league) {
       updatedIds.push(match.item.id);
     } else {
       unmatched++;
-      console.warn('NO MATCH for "' + teamName + '" - CREATING new item');
+      console.warn('NO MATCH for "' + teamName + '" - would CREATE new item');
       var created = await wfCreateItem(WF.TEAMS, fieldData);
       updatedIds.push(created.id);
     }
@@ -498,7 +497,8 @@ async function main() {
     }
   }
 
-  console.log('league-sync-v2.js complete! Check your live Premier League page.');
+  console.log('league-sync-v2.js complete!');
+  if (DRY_RUN) console.log('This was a DRY RUN. Review results before setting DRY_RUN = false.');
 }
 
 main().catch(function(err) {
