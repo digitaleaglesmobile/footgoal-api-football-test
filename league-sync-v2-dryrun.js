@@ -1,9 +1,9 @@
 // ============================================================
 // league-sync-v2.js — footgoal.co
-// DRY RUN — re-checking Brasileirão mid-season data (Round 19)
+// LIVE MODE — Brasileirão (confirmed real Round 19 mid-season data)
 // ============================================================
 
-const DRY_RUN = true;
+const DRY_RUN = false;
 
 // ── ENV ──────────────────────────────────────────────────────
 const SUPABASE_URL  = process.env.SUPABASE_URL;
@@ -169,10 +169,6 @@ async function wfGetAllItems(collectionId) {
 
 async function wfCreateItem(collectionId, fieldData, retries) {
   if (retries === undefined) retries = 3;
-  if (DRY_RUN) {
-    console.log('[DRY RUN] Would CREATE:', fieldData.name || fieldData.slug);
-    return { id: 'dry-run-' + slugify(fieldData.name || 'item') };
-  }
   var res = await fetch('https://api.webflow.com/v2/collections/' + collectionId + '/items', {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + WEBFLOW_TOKEN, 'Content-Type': 'application/json', accept: 'application/json' },
@@ -192,10 +188,6 @@ async function wfCreateItem(collectionId, fieldData, retries) {
 
 async function wfUpdateItem(collectionId, itemId, fieldData, retries) {
   if (retries === undefined) retries = 3;
-  if (DRY_RUN) {
-    console.log('[DRY RUN] Would UPDATE ' + itemId + ':', JSON.stringify(fieldData).slice(0, 200));
-    return { id: itemId };
-  }
   var res = await fetch('https://api.webflow.com/v2/collections/' + collectionId + '/items/' + itemId, {
     method: 'PATCH',
     headers: { Authorization: 'Bearer ' + WEBFLOW_TOKEN, 'Content-Type': 'application/json', accept: 'application/json' },
@@ -214,10 +206,6 @@ async function wfUpdateItem(collectionId, itemId, fieldData, retries) {
 }
 
 async function wfPublishItems(collectionId, itemIds) {
-  if (DRY_RUN) {
-    console.log('[DRY RUN] Would PUBLISH ' + itemIds.length + ' items');
-    return;
-  }
   if (!itemIds || itemIds.length === 0) return;
   for (var i = 0; i < itemIds.length; i += 100) {
     var batch = itemIds.slice(i, i + 100);
@@ -265,7 +253,7 @@ async function syncTeams(league) {
       updatedIds.push(match.item.id);
     } else {
       unmatched++;
-      console.warn('NO MATCH for "' + teamName + '"');
+      console.warn('NO MATCH for "' + teamName + '" - CREATING new item');
       var created = await wfCreateItem(WF.TEAMS, fieldData);
       updatedIds.push(created.id);
     }
@@ -283,7 +271,6 @@ async function syncStandings(league) {
     console.log('No standings returned for ' + league.name);
     return [];
   }
-  console.log('SAMPLE STANDING ENTRY: ' + JSON.stringify(table[0]));
   var wfTeams = await wfGetAllItems(WF.TEAMS);
   var teamByNormalizedName = new Map();
   for (var t of wfTeams) {
@@ -321,6 +308,7 @@ async function syncStandings(league) {
       updatedIds.push(created.id);
     }
   }
+  await wfPublishItems(WF.STANDINGS, updatedIds);
   console.log('Standings done: ' + updatedIds.length + ' items');
   return updatedIds;
 }
@@ -331,9 +319,6 @@ async function syncMatches(league) {
   var matchesData = await apiFetch('/fixtures?league=' + league.api_id + '&season=' + league.season);
   var apiMatches = matchesData.response || [];
   if (apiMatches.length === 0) { console.log('No fixtures returned for ' + league.name); return []; }
-
-  var playedCount = apiMatches.filter(function(m) { return m.fixture.status.short === 'FT'; }).length;
-  console.log('FIXTURE STATUS CHECK: ' + playedCount + ' matches marked FT (played) out of ' + apiMatches.length);
 
   var wfTeams = await wfGetAllItems(WF.TEAMS);
   var teamByNormalizedName = new Map();
@@ -374,6 +359,7 @@ async function syncMatches(league) {
     await sleep(WEBFLOW_WRITE_DELAY_MS);
     if (processed % 50 === 0) console.log('...' + processed + '/' + apiMatches.length + ' processed');
   }
+  await wfPublishItems(WF.MATCHES, updatedIds);
   console.log(league.name + ' matches: ' + matched + ' updated, ' + created + ' created, ' + skipped + ' skipped, ' + failed + ' failed');
   return updatedIds;
 }
