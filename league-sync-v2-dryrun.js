@@ -1,6 +1,9 @@
 // ============================================================
 // league-sync-v2.js — footgoal.co
-// LIVE MODE — Brasileirão (confirmed real Round 19 mid-season data)
+// LIVE MODE — all 7 active leagues (Premier League, La Liga, Bundesliga,
+// Serie A, Eredivisie, Ligue 1, Brasileirão). Brasileirão runs Jan–Dec
+// (mid-season, real Round 19 data); European leagues are pre-season 2026-27.
+// Champions League excluded until the Aug 27, 2026 draw.
 // ============================================================
 
 const DRY_RUN = false;
@@ -20,9 +23,17 @@ const WF = {
   TOP_SCORERS: '6a32a89633c9bd6bea624094',
 };
 
-// ── LEAGUE CONFIG — Brasileirão only ────────────
+// ── LEAGUE CONFIG — all 7 active leagues (Champions League excluded until Aug 27, 2026 draw) ────────────
 const LEAGUES = [
-  { code: 'BSA', name: 'Brasileiro Série A', api_id: 71, webflow_id: '6a32a9cb63396a5393212f48', season: 2026 },
+  { code: 'PL',  name: 'Premier League',        api_id: 39,  webflow_id: '6a32a9cb63396a5393212f3a', season: 2026 },
+  { code: 'LL',  name: 'La Liga',                api_id: 140, webflow_id: '6a32a9cb63396a5393212f3e', season: 2026 },
+  { code: 'BL',  name: 'Bundesliga',             api_id: 78,  webflow_id: '6a32a9cb63396a5393212f40', season: 2026 },
+  { code: 'SA',  name: 'Serie A',                api_id: 135, webflow_id: '6a32a9cb63396a5393212f42', season: 2026 },
+  { code: 'ERE', name: 'Eredivisie',             api_id: 88,  webflow_id: '6a32a9cb63396a5393212f44', season: 2026 },
+  { code: 'L1',  name: 'Ligue 1',                api_id: 61,  webflow_id: '6a32a9cb63396a5393212f46', season: 2026 },
+  { code: 'BSA', name: 'Brasileiro Série A',     api_id: 71,  webflow_id: '6a32a9cb63396a5393212f48', season: 2026 },
+  // Champions League intentionally excluded — real 36-team field not set until the Aug 27, 2026 draw.
+  // { code: 'UCL', name: 'UEFA Champions League', api_id: 2, webflow_id: '6a32a9cb63396a5393212f3c', season: 2026 },
 ];
 
 const DELAY_MS = 1000;
@@ -259,6 +270,7 @@ async function syncTeams(league) {
     }
   }
   console.log(league.name + ' teams: ' + matched + ' matched (' + matchedByToken + ' via token match), ' + unmatched + ' unmatched');
+  await wfPublishItems(WF.TEAMS, updatedIds);
   return updatedIds;
 }
 
