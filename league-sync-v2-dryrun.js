@@ -283,7 +283,7 @@ async function syncStandings(league) {
     console.log('No standings returned for ' + league.name);
     return [];
   }
-  console.log('Sample standing entry: ' + JSON.stringify(table[0]).slice(0, 300));
+  console.log('SAMPLE STANDING ENTRY: ' + JSON.stringify(table[0]));
   var wfTeams = await wfGetAllItems(WF.TEAMS);
   var teamByNormalizedName = new Map();
   for (var t of wfTeams) {
@@ -333,7 +333,7 @@ async function syncMatches(league) {
   if (apiMatches.length === 0) { console.log('No fixtures returned for ' + league.name); return []; }
 
   var playedCount = apiMatches.filter(function(m) { return m.fixture.status.short === 'FT'; }).length;
-  console.log('Fixture status check: ' + playedCount + ' matches marked FT (played) out of ' + apiMatches.length);
+  console.log('FIXTURE STATUS CHECK: ' + playedCount + ' matches marked FT (played) out of ' + apiMatches.length);
 
   var wfTeams = await wfGetAllItems(WF.TEAMS);
   var teamByNormalizedName = new Map();
