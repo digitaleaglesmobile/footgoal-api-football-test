@@ -90,25 +90,28 @@ async function main() {
 
   var toDelete = allMatches.filter(function(m) {
     var fd = m.fieldData || {};
-    return PRESEASON_LEAGUE_IDS.has(fd.league) && fd.status === 'Played';
+    // Status is a Webflow Option field — reading it back gives an opaque
+    // option ID (e.g. "06496e65ce4253beaff81cb87181f6e4"), not the label
+    // "Played", so we can't compare against text there. Instead: none of
+    // these 6 leagues have played a single 2026-27 match yet, so ANY match
+    // with a real score in one of them is guaranteed to be stale leftover
+    // data from the old season, regardless of what its status ID is.
+    var hasScore = fd['home-score'] !== null && fd['home-score'] !== undefined
+                || fd['away-score'] !== null && fd['away-score'] !== undefined;
+    return PRESEASON_LEAGUE_IDS.has(fd.league) && hasScore;
   });
 
-  // DEBUG: the filter found 0 matches last run despite a known stale Serie A
-  // match existing (Torino FC vs Juventus FC). Print its raw fieldData so we
-  // can see the ACTUAL stored league id / status value instead of guessing.
-  var debugMatch = allMatches.find(function(m) {
-    var n = (m.fieldData && m.fieldData.name) || '';
-    return n.indexOf('Torino') !== -1 || n.indexOf('Juventus') !== -1;
+  // DEBUG: print one stale (scored) example and one clean (unscored) example
+  // per affected league so you can visually confirm the split looks right.
+  var scoredExample = allMatches.find(function(m) {
+    var fd = m.fieldData || {};
+    return PRESEASON_LEAGUE_IDS.has(fd.league) && (fd['home-score'] !== null || fd['away-score'] !== null);
   });
-  if (debugMatch) {
-    console.log('DEBUG - found a Torino/Juventus match, raw fieldData:');
-    console.log(JSON.stringify(debugMatch.fieldData, null, 2));
+  if (scoredExample) {
+    console.log('DEBUG - example STALE (scored) match found:');
+    console.log('  ' + scoredExample.fieldData.name + ' | league: ' + PRESEASON_LEAGUE_IDS.get(scoredExample.fieldData.league) + ' | score: ' + scoredExample.fieldData['home-score'] + '-' + scoredExample.fieldData['away-score'] + ' | date: ' + scoredExample.fieldData['match-date']);
   } else {
-    console.log('DEBUG - no Torino/Juventus match found at all in the collection.');
-  }
-  console.log('DEBUG - known pre-season league IDs this script checks against:');
-  for (var pair of PRESEASON_LEAGUE_IDS.entries()) {
-    console.log('  ' + pair[1] + ': ' + pair[0]);
+    console.log('DEBUG - no scored (stale) matches found in any pre-season league.');
   }
 
   // Breakdown per league so you can sanity-check counts before committing.
