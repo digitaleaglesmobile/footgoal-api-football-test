@@ -297,22 +297,34 @@ async function syncTeams(league) {
 }
 
 // ── SYNC STANDINGS ────────────────────────────────────────────
-async function syncStandings(league) {
+// teamByNormalizedName and allStandings are fetched ONCE in main() and shared
+// across all leagues, instead of each league re-fetching the whole collection.
+async function syncStandings(league, teamByNormalizedName, allTeams, allStandings) {
   console.log('Syncing standings for ' + league.name);
   var standingsData = await apiFetch('/standings?league=' + league.api_id + '&season=' + league.season);
   var table = (standingsData.response && standingsData.response[0] && standingsData.response[0].league && standingsData.response[0].league.standings && standingsData.response[0].league.standings[0]) || [];
+
   if (table.length === 0) {
-    console.log('No standings returned for ' + league.name);
-    return [];
+    // Pre-season: API-Football has no table yet. Build a zeroed table from
+    // this league's Teams instead of leaving old/stale rows untouched.
+    var leagueTeams = allTeams.filter(function(t) { return t.fieldData && t.fieldData.league === league.webflow_id; });
+    if (leagueTeams.length === 0) {
+      console.log('No standings from API and no teams found for ' + league.name + ' - skipping');
+      return [];
+    }
+    console.log('No live standings from API for ' + league.name + ' - writing zeroed pre-season table (' + leagueTeams.length + ' teams)');
+    table = leagueTeams.map(function(t, idx) {
+      return {
+        team: { name: t.fieldData.name },
+        rank: idx + 1,
+        all: { played: 0, win: 0, draw: 0, lose: 0, goals: { for: 0, against: 0 } },
+        goalsDiff: 0, points: 0, form: null,
+      };
+    });
   }
-  var wfTeams = await wfGetAllItems(WF.TEAMS);
-  var teamByNormalizedName = new Map();
-  for (var t of wfTeams) {
-    if (t.fieldData && t.fieldData.name) teamByNormalizedName.set(normalizeTeamName(t.fieldData.name), t);
-  }
-  var wfStandings = await wfGetAllItems(WF.STANDINGS);
+
   var standingIndex = new Map();
-  for (var s of wfStandings) {
+  for (var s of allStandings) {
     var teamRef = s.fieldData ? s.fieldData.team : null;
     var leagueRef = s.fieldData ? s.fieldData.league : null;
     if (teamRef && leagueRef === league.webflow_id) standingIndex.set(teamRef, s);
@@ -348,23 +360,15 @@ async function syncStandings(league) {
 }
 
 // ── SYNC MATCHES ──────────────────────────────────────────────
-async function syncMatches(league) {
+// teamByNormalizedName and matchByApiId are fetched ONCE in main() and shared
+// across all leagues, instead of each league re-fetching the whole Matches
+// collection (2,600+ items) from scratch every time.
+async function syncMatches(league, teamByNormalizedName, matchByApiId) {
   console.log('Syncing matches for ' + league.name);
   var matchesData = await apiFetch('/fixtures?league=' + league.api_id + '&season=' + league.season);
   var apiMatches = matchesData.response || [];
   if (apiMatches.length === 0) { console.log('No fixtures returned for ' + league.name); return []; }
 
-  var wfTeams = await wfGetAllItems(WF.TEAMS);
-  var teamByNormalizedName = new Map();
-  for (var t of wfTeams) {
-    if (t.fieldData && t.fieldData.name) teamByNormalizedName.set(normalizeTeamName(t.fieldData.name), t);
-  }
-  var wfMatches = await wfGetAllItems(WF.MATCHES);
-  var matchByApiId = new Map();
-  for (var m0 of wfMatches) {
-    var apiId = m0.fieldData ? m0.fieldData['api-fixture-id'] : null;
-    if (apiId) matchByApiId.set(String(apiId), m0);
-  }
   var matched = 0, created = 0, skipped = 0, failed = 0;
   var updatedIds = [];
   var processed = 0;
@@ -374,13 +378,17 @@ async function syncMatches(league) {
     var awayMatch = findTeamMatch(m.teams.away.name, teamByNormalizedName);
     if (!homeMatch || !awayMatch) { skipped++; return; }
     var status = mapMatchStatus(m.fixture.status.short);
+    var roundText = m.league.round || '';
+    var roundMatch = roundText.match(/(\d+)/);
+    var matchweek = roundMatch ? parseInt(roundMatch[1], 10) : null;
     var fieldData = {
       name: homeMatch.item.fieldData.name + ' vs ' + awayMatch.item.fieldData.name,
       slug: slugify(homeMatch.item.fieldData.name) + '-vs-' + slugify(awayMatch.item.fieldData.name) + '-' + m.fixture.id,
       league: league.webflow_id,
       'home-team': homeMatch.item.id, 'away-team': awayMatch.item.id,
       'home-badge': homeMatch.item.fieldData.badge || null, 'away-badge': awayMatch.item.fieldData.badge || null,
-      'match-date': m.fixture.date, 'round-label': m.league.round || '',
+      'match-date': m.fixture.date, 'round-label': roundText,
+      matchweek: matchweek,
       'home-score': m.goals.home, 'away-score': m.goals.away,
       status: status, venue: m.fixture.venue && m.fixture.venue.name ? m.fixture.venue.name : '',
       'api-fixture-id': m.fixture.id,
@@ -400,12 +408,39 @@ async function syncMatches(league) {
 // ── MAIN ──────────────────────────────────────────────────────
 async function main() {
   console.log('league-sync-v2.js starting, LIVE MODE: ' + !DRY_RUN);
+
+  // Phase 1: sync Teams for every league first (creates/updates/publishes).
+  for (var league of LEAGUES) {
+    try {
+      await syncTeams(league);
+    } catch (err) {
+      console.error(league.name + ' teams failed: ' + err.message);
+    }
+  }
+
+  // Phase 2: fetch Teams/Standings/Matches ONCE for the whole run instead of
+  // once per league — this is what was causing most of the slow runtime,
+  // since Matches alone is 2,600+ items (~27 pages) re-fetched 7x before.
+  console.log('Fetching shared Teams/Standings/Matches reference data once...');
+  var allTeams = await wfGetAllItems(WF.TEAMS);
+  var teamByNormalizedName = new Map();
+  for (var t of allTeams) {
+    if (t.fieldData && t.fieldData.name) teamByNormalizedName.set(normalizeTeamName(t.fieldData.name), t);
+  }
+  var allStandings = await wfGetAllItems(WF.STANDINGS);
+  var allMatches = await wfGetAllItems(WF.MATCHES);
+  var matchByApiId = new Map();
+  for (var m0 of allMatches) {
+    var apiId = m0.fieldData ? m0.fieldData['api-fixture-id'] : null;
+    if (apiId) matchByApiId.set(String(apiId), m0);
+  }
+
+  // Phase 3: Standings + Matches per league, reusing the shared data above.
   for (var league of LEAGUES) {
     console.log('Processing: ' + league.name);
     try {
-      await syncTeams(league);
-      await syncStandings(league);
-      await syncMatches(league);
+      await syncStandings(league, teamByNormalizedName, allTeams, allStandings);
+      await syncMatches(league, teamByNormalizedName, matchByApiId);
       console.log(league.name + ' complete');
     } catch (err) { console.error(league.name + ' failed: ' + err.message); }
   }
