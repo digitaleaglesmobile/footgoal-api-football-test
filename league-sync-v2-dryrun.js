@@ -127,6 +127,20 @@ function getFormString(form) {
   return form.slice(-5);
 }
 
+// Maps API-Football's country name strings to the 2-letter codes their own
+// flag CDN expects (https://media.api-sports.io/flags/{code}.svg).
+var COUNTRY_TO_FLAG_CODE = {
+  'England': 'gb-eng', 'Spain': 'es', 'France': 'fr', 'Germany': 'de',
+  'Italy': 'it', 'Netherlands': 'nl', 'Brazil': 'br', 'Portugal': 'pt',
+  'Belgium': 'be', 'Scotland': 'gb-sct', 'Switzerland': 'ch', 'Austria': 'at',
+  'Denmark': 'dk', 'Croatia': 'hr', 'Serbia': 'rs', 'Turkey': 'tr',
+  'Czech-Republic': 'cz', 'Norway': 'no', 'Sweden': 'se', 'Poland': 'pl',
+  'Greece': 'gr', 'Ukraine': 'ua', 'Kazakhstan': 'kz', 'Azerbaijan': 'az',
+};
+function countryToFlagCode(countryName) {
+  return COUNTRY_TO_FLAG_CODE[countryName] || countryName.toLowerCase().replace(/\s+/g, '-');
+}
+
 function mapMatchStatus(shortStatus) {
   var finished = ['FT', 'AET', 'PEN'];
   var live = ['1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE'];
@@ -276,7 +290,11 @@ async function syncTeams(league) {
       founded: t.team.founded || null,
       stadium: t.venue && t.venue.name ? t.venue.name : '',
       'api-team-id': String(t.team.id),
+      country: t.team.country || '',
     };
+    if (t.team.country) {
+      fieldData.flag = { url: 'https://media.api-sports.io/flags/' + countryToFlagCode(t.team.country) + '.svg' };
+    }
     if (t.team.logo) fieldData.badge = { url: t.team.logo };
     var match = findTeamMatch(teamName, byNormalizedName);
     if (match) {
