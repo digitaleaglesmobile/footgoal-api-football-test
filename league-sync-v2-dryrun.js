@@ -36,8 +36,30 @@ const LEAGUES = [
   // { code: 'UCL', name: 'UEFA Champions League', api_id: 2, webflow_id: '6a32a9cb63396a5393212f3c', season: 2026 },
 ];
 
-const DELAY_MS = 1000;
+const DELAY_MS = 300;
 const WEBFLOW_WRITE_DELAY_MS = 1000;
+const TEAM_CONCURRENCY = 5;
+const STANDINGS_CONCURRENCY = 5;
+const MATCH_CONCURRENCY = 6;
+
+// ── CONCURRENCY HELPER ─────────────────────────────────────────
+// Runs `mapper` over `items` with at most `concurrency` in flight at once,
+// instead of fully serial. Safe in JS since only one callback body runs
+// at a time between awaits — no manual locking needed for shared counters.
+async function pMap(items, mapper, concurrency) {
+  var results = new Array(items.length);
+  var index = 0;
+  async function worker() {
+    while (index < items.length) {
+      var current = index++;
+      results[current] = await mapper(items[current], current);
+    }
+  }
+  var workers = [];
+  for (var i = 0; i < Math.min(concurrency, items.length); i++) workers.push(worker());
+  await Promise.all(workers);
+  return results;
+}
 
 // ── MANUAL ALIASES ──────────────────────────────────────────────
 const MANUAL_ALIASES = {
@@ -243,7 +265,7 @@ async function syncTeams(league) {
   }
   var matched = 0, matchedByToken = 0, unmatched = 0;
   var updatedIds = [];
-  for (var t of apiTeams) {
+  await pMap(apiTeams, async function(t) {
     var teamName = t.team.name;
     var slug = slugify(teamName);
     var fieldData = {
@@ -268,7 +290,7 @@ async function syncTeams(league) {
       var created = await wfCreateItem(WF.TEAMS, fieldData);
       updatedIds.push(created.id);
     }
-  }
+  }, TEAM_CONCURRENCY);
   console.log(league.name + ' teams: ' + matched + ' matched (' + matchedByToken + ' via token match), ' + unmatched + ' unmatched');
   await wfPublishItems(WF.TEAMS, updatedIds);
   return updatedIds;
@@ -296,10 +318,10 @@ async function syncStandings(league) {
     if (teamRef && leagueRef === league.webflow_id) standingIndex.set(teamRef, s);
   }
   var updatedIds = [];
-  for (var entry of table) {
+  await pMap(table, async function(entry) {
     var teamName = entry.team.name;
     var match = findTeamMatch(teamName, teamByNormalizedName);
-    if (!match) { console.warn('No Webflow team found for: ' + teamName); continue; }
+    if (!match) { console.warn('No Webflow team found for: ' + teamName); return; }
     var wfTeam = match.item;
     var fieldData = {
       name: wfTeam.fieldData.name,
@@ -319,7 +341,7 @@ async function syncStandings(league) {
       var created = await wfCreateItem(WF.STANDINGS, fieldData);
       updatedIds.push(created.id);
     }
-  }
+  }, STANDINGS_CONCURRENCY);
   await wfPublishItems(WF.STANDINGS, updatedIds);
   console.log('Standings done: ' + updatedIds.length + ' items');
   return updatedIds;
@@ -346,11 +368,11 @@ async function syncMatches(league) {
   var matched = 0, created = 0, skipped = 0, failed = 0;
   var updatedIds = [];
   var processed = 0;
-  for (var m of apiMatches) {
+  await pMap(apiMatches, async function(m) {
     processed++;
     var homeMatch = findTeamMatch(m.teams.home.name, teamByNormalizedName);
     var awayMatch = findTeamMatch(m.teams.away.name, teamByNormalizedName);
-    if (!homeMatch || !awayMatch) { skipped++; continue; }
+    if (!homeMatch || !awayMatch) { skipped++; return; }
     var status = mapMatchStatus(m.fixture.status.short);
     var fieldData = {
       name: homeMatch.item.fieldData.name + ' vs ' + awayMatch.item.fieldData.name,
@@ -368,9 +390,8 @@ async function syncMatches(league) {
       if (existingMatch) { matched++; await wfUpdateItem(WF.MATCHES, existingMatch.id, fieldData); updatedIds.push(existingMatch.id); }
       else { created++; var createdItem = await wfCreateItem(WF.MATCHES, fieldData); updatedIds.push(createdItem.id); }
     } catch (err) { failed++; console.error('Failed: ' + err.message); }
-    await sleep(WEBFLOW_WRITE_DELAY_MS);
     if (processed % 50 === 0) console.log('...' + processed + '/' + apiMatches.length + ' processed');
-  }
+  }, MATCH_CONCURRENCY);
   await wfPublishItems(WF.MATCHES, updatedIds);
   console.log(league.name + ' matches: ' + matched + ' updated, ' + created + ' created, ' + skipped + ' skipped, ' + failed + ' failed');
   return updatedIds;
