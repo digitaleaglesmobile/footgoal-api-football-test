@@ -93,6 +93,24 @@ async function main() {
     return PRESEASON_LEAGUE_IDS.has(fd.league) && fd.status === 'Played';
   });
 
+  // DEBUG: the filter found 0 matches last run despite a known stale Serie A
+  // match existing (Torino FC vs Juventus FC). Print its raw fieldData so we
+  // can see the ACTUAL stored league id / status value instead of guessing.
+  var debugMatch = allMatches.find(function(m) {
+    var n = (m.fieldData && m.fieldData.name) || '';
+    return n.indexOf('Torino') !== -1 || n.indexOf('Juventus') !== -1;
+  });
+  if (debugMatch) {
+    console.log('DEBUG - found a Torino/Juventus match, raw fieldData:');
+    console.log(JSON.stringify(debugMatch.fieldData, null, 2));
+  } else {
+    console.log('DEBUG - no Torino/Juventus match found at all in the collection.');
+  }
+  console.log('DEBUG - known pre-season league IDs this script checks against:');
+  for (var pair of PRESEASON_LEAGUE_IDS.entries()) {
+    console.log('  ' + pair[1] + ': ' + pair[0]);
+  }
+
   // Breakdown per league so you can sanity-check counts before committing.
   var byLeague = {};
   for (var item of toDelete) {
