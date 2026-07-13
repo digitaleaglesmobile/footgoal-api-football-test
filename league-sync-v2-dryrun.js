@@ -196,7 +196,8 @@ async function supabaseUpsert(table, data, conflictCols) {
 }
 
 // ── WEBFLOW API ──────────────────────────────────────────────
-async function wfGetAllItems(collectionId) {
+async function wfGetAllItems(collectionId, retries) {
+  if (retries === undefined) retries = 5;
   var items = [];
   var offset = 0;
   var limit = 100;
@@ -205,6 +206,11 @@ async function wfGetAllItems(collectionId) {
       'https://api.webflow.com/v2/collections/' + collectionId + '/items?limit=' + limit + '&offset=' + offset,
       { headers: { Authorization: 'Bearer ' + WEBFLOW_TOKEN, accept: 'application/json' } }
     );
+    if (res.status === 429) {
+      if (retries <= 0) throw new Error('Webflow GET items: gave up after repeated rate limiting');
+      await sleep(15000);
+      return wfGetAllItems(collectionId, retries - 1);
+    }
     if (!res.ok) throw new Error('Webflow GET items: ' + res.status);
     var data = await res.json();
     items = items.concat(data.items || []);
@@ -293,7 +299,7 @@ async function syncTeams(league) {
       country: t.team.country || '',
     };
     if (t.team.country) {
-      fieldData.flag = { url: 'https://media.api-sports.io/flags/' + countryToFlagCode(t.team.country) + '.svg' };
+      fieldData.flag = 'https://media.api-sports.io/flags/' + countryToFlagCode(t.team.country) + '.svg';
     }
     if (t.team.logo) fieldData.badge = { url: t.team.logo };
     var match = findTeamMatch(teamName, byNormalizedName);
