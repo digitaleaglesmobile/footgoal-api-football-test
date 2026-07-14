@@ -1,0 +1,30 @@
+name: Sync Live Matches (1-min pinged)
+
+# This workflow has NO schedule: block. GitHub's own `schedule:` trigger
+# cannot reliably run below 5 minutes, so 1-minute cadence comes from an
+# EXTERNAL pinger (e.g. cron-job.org) calling GitHub's REST API once a
+# minute to fire this workflow_dispatch event. See setup notes below.
+on:
+  workflow_dispatch:
+
+# Prevents two ticks from overlapping if a run is slow (rate-limited,
+# retrying, etc.) - the next minute's trigger will queue/cancel instead of
+# running in parallel and risking duplicate/conflicting Webflow writes.
+concurrency:
+  group: sync-live
+  cancel-in-progress: false
+
+jobs:
+  sync-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4  # safety: must not still be running when the next tick fires
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run live-check sync
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
+        run: node sync-live.js
