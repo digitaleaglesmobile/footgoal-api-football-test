@@ -1,0 +1,24 @@
+name: Get World Cup 2026 Fixtures (one-off)
+
+# Manual only - click "Run workflow" in the Actions tab whenever you need
+# a fresh copy of the fixture list. Does not touch Webflow or Supabase.
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run fixture fetch
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+        run: node get-wc2026-fixtures.js
+      - name: Upload CSV as downloadable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wc2026-fixtures
+          path: wc2026-fixtures.csv
