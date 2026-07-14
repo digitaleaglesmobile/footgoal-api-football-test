@@ -1,19 +1,23 @@
-name: Inspect World Cup Fields (one-off, read-only)
+name: Sync Live World Cup Matches (1-min pinged)
 
-# Manual only. Runs sync-live-wc.js in "inspect" mode, which only READS one
-# CMS item and prints its field keys - it does not write anything.
 on:
   workflow_dispatch:
 
+concurrency:
+  group: sync-live-wc
+  cancel-in-progress: false
+
 jobs:
-  inspect:
+  sync-live-wc:
     runs-on: ubuntu-latest
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Run inspect mode
+      - name: Run World Cup live-check sync
         env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
-        run: node sync-live-wc.js inspect
+        run: node sync-live-wc.js
