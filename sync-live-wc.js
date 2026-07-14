@@ -26,7 +26,7 @@ const WC_SEASON = 2026;
 // Run `node sync-live-wc.js inspect` first and compare against real output
 // before trusting these for a live run.
 const FIELDS = {
-  fixtureId: 'fixture_id',
+  fixtureId: 'fixture-id-3',
   team1Score: 'team-1-score',
   team2Score: 'team-2-score',
   matchStatus: 'match-status',
@@ -96,7 +96,7 @@ async function runInspect() {
   }
   // Prefer an item that already has a fixture_id set, if any, so score
   // fields are more likely visible/relevant; otherwise just use the first.
-  const sample = items.find(i => i.fieldData && i.fieldData.fixture_id) || items[0];
+  const sample = items.find(i => i.fieldData && i.fieldData[FIELDS.fixtureId]) || items[0];
   console.log('Sample item name: ' + (sample.fieldData.name || '(no name field)'));
   console.log('\nFull fieldData keys and values:\n');
   console.log(JSON.stringify(sample.fieldData, null, 2));
