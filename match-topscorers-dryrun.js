@@ -1,13 +1,10 @@
 // ============================================================
 // match-topscorers-dryrun.js - footgoal.co
 // READ-ONLY. Does NOT write to Webflow. For each of the 7 leagues,
-// pulls API-Football's topscorers list (already ranked by goals) and
-// matches it against your existing 80 Top Scorers CMS items using the
-// rank field each item already has (rank 9 = 9th scorer in that league).
-//
-// Prints a full proposed match list, plus a name-mismatch warning for
-// any pair where the CMS name and API name don't reasonably agree -
-// review those manually before trusting the match.
+// pulls API-Football's topscorers list and matches it against your
+// existing Top Scorers CMS items - first by rank position, falling
+// back to a full-list name search if the rank-based guess doesn't
+// look right (handles rank drift as goal tallies change over time).
 //
 // USAGE: node match-topscorers-dryrun.js
 // ============================================================
@@ -41,6 +38,13 @@ function namesRoughlyMatch(a, b) {
   var lastA = partsA[partsA.length - 1];
   var lastB = partsB[partsB.length - 1];
   return lastA === lastB || na.indexOf(lastB) !== -1 || nb.indexOf(lastA) !== -1;
+}
+
+function findByNameInList(cmsName, apiList) {
+  for (var i = 0; i < apiList.length; i++) {
+    if (namesRoughlyMatch(cmsName, apiList[i].player.name)) return apiList[i];
+  }
+  return null;
 }
 
 async function apiFetch(path) {
@@ -97,28 +101,44 @@ async function main() {
     var data = await apiFetch('/players/topscorers?league=' + league.api_id + '&season=' + league.season);
     var apiList = data.response || [];
     if (apiList.length === 0) {
-      console.log('  No topscorers data returned for ' + league.name + ' - skipping.\n');
+      console.log('  No topscorers data returned for ' + league.name + ' (likely pre-season, no goals yet) - skipping.\n');
       continue;
     }
 
     for (var j = 0; j < leagueItems.length; j++) {
       var item = leagueItems[j];
       var rank = item.fieldData.rank;
-      if (!rank || rank < 1 || rank > apiList.length) {
-        noMatch.push({ cmsName: item.fieldData.name, league: league.name, reason: 'rank ' + rank + ' out of range (API list has ' + apiList.length + ')' });
+      var method = null;
+      var apiEntry = null;
+
+      if (rank && rank >= 1 && rank <= apiList.length) {
+        var rankGuess = apiList[rank - 1];
+        if (namesRoughlyMatch(item.fieldData.name, rankGuess.player.name)) {
+          apiEntry = rankGuess;
+          method = 'rank';
+        }
+      }
+      if (!apiEntry) {
+        var nameGuess = findByNameInList(item.fieldData.name, apiList);
+        if (nameGuess) {
+          apiEntry = nameGuess;
+          method = 'name-fallback (rank drifted)';
+        }
+      }
+
+      if (!apiEntry) {
+        noMatch.push({ cmsName: item.fieldData.name, league: league.name, reason: 'no rank or name match found in current topscorers list' });
         continue;
       }
-      var apiEntry = apiList[rank - 1];
-      var apiName = apiEntry.player.name;
-      var confident = namesRoughlyMatch(item.fieldData.name, apiName);
+
       proposedMatches.push({
         cmsId: item.id,
         cmsName: item.fieldData.name,
         rank: rank,
         apiPlayerId: apiEntry.player.id,
-        apiName: apiName,
+        apiName: apiEntry.player.name,
         league: league.name,
-        confident: confident,
+        method: method,
       });
     }
   }
@@ -126,23 +146,21 @@ async function main() {
   console.log('\n========== PROPOSED MATCHES ==========\n');
   for (var k = 0; k < proposedMatches.length; k++) {
     var m = proposedMatches[k];
-    var flag = m.confident ? '  OK  ' : ' CHECK';
-    console.log('[' + flag + '] ' + m.league + ' rank ' + m.rank + ': CMS "' + m.cmsName + '" -> API "' + m.apiName + '" (player_id: ' + m.apiPlayerId + ')');
+    console.log('[' + m.method + '] ' + m.league + ' (CMS rank ' + m.rank + '): CMS "' + m.cmsName + '" -> API "' + m.apiName + '" (player_id: ' + m.apiPlayerId + ')');
   }
 
-  var uncertain = proposedMatches.filter(function(m) { return !m.confident; });
   console.log('\n========== SUMMARY ==========');
   console.log('Total proposed matches: ' + proposedMatches.length);
-  console.log('Confident (names agree): ' + (proposedMatches.length - uncertain.length));
-  console.log('NEEDS REVIEW (name mismatch): ' + uncertain.length);
+  var viaFallback = proposedMatches.filter(function(m) { return m.method !== 'rank'; });
+  console.log('Matched via rank drift fallback (double check these): ' + viaFallback.length);
   if (noMatch.length) {
-    console.log('\nItems with no valid match (rank issue):');
+    console.log('\nTruly unmatched (needs manual lookup):');
     for (var n = 0; n < noMatch.length; n++) {
       console.log('  - ' + noMatch[n].cmsName + ' (' + noMatch[n].league + '): ' + noMatch[n].reason);
     }
   }
-  console.log('\nNothing has been written. Review the CHECK-flagged rows above manually.');
-  console.log('Once you approve, we will build the real write script using this same matching logic.');
+  console.log('\nNothing has been written. Review the list above.');
+  console.log('Once approved, we will build the real write script using this same matching logic.');
 }
 
 main().catch(function(err) { console.error('Fatal error: ' + err.message); process.exit(1); });
