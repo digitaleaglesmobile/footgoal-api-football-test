@@ -301,7 +301,10 @@ async function syncTeams(league) {
     if (t.team.country) {
       fieldData.flag = 'https://media.api-sports.io/flags/' + countryToFlagCode(t.team.country) + '.svg';
     }
-    if (t.team.logo) fieldData.badge = { url: t.team.logo };
+    // FIX (2026-07-30): added `alt` so every badge — new or re-synced — gets
+    // descriptive alt text automatically. Matches inherit this for free since
+    // syncMatches() copies the team's fieldData.badge object as-is.
+    if (t.team.logo) fieldData.badge = { url: t.team.logo, alt: teamName + ' badge' };
     var match = findTeamMatch(teamName, byNormalizedName);
     if (match) {
       matched++;
@@ -411,6 +414,8 @@ async function syncMatches(league, teamByNormalizedName, matchByApiId) {
       slug: slugify(homeMatch.item.fieldData.name) + '-vs-' + slugify(awayMatch.item.fieldData.name) + '-' + m.fixture.id,
       league: league.webflow_id,
       'home-team': homeMatch.item.id, 'away-team': awayMatch.item.id,
+      // No separate fix needed here — this copies the team's badge object,
+      // which now already contains `alt` thanks to the syncTeams() fix above.
       'home-badge': homeMatch.item.fieldData.badge || null, 'away-badge': awayMatch.item.fieldData.badge || null,
       'match-date': m.fixture.date, 'round-label': roundText,
       matchweek: matchweek,
