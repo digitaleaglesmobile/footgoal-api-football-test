@@ -1,0 +1,22 @@
+name: Fix Webflow Alt Text
+
+# Manual trigger only — go to the Actions tab on GitHub and click "Run workflow"
+on:
+  workflow_dispatch:
+
+jobs:
+  fix-alt-text:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run alt-text fix script
+        env:
+          WEBFLOW_API_TOKEN: ${{ secrets.WEBFLOW_API_TOKEN }}
+        run: node fix-alt-text.js
