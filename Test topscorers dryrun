@@ -1,0 +1,113 @@
+/**
+ * test-topscorers-dryrun.js
+ *
+ * Dry run: fetches REAL data from API-Football, but mocks the Webflow side
+ * so nothing actually gets written to your CMS. Logs exactly what would be
+ * upserted for each player, plus any warnings about unmatched leagues/teams
+ * or missing photos.
+ *
+ * Usage:
+ *   API_FOOTBALL_KEY=xxx SEASON=2025 node test-topscorers-dryrun.js
+ *
+ * To test just one league instead of all seven, pass LEAGUE_ONLY:
+ *   API_FOOTBALL_KEY=xxx SEASON=2025 LEAGUE_ONLY=premier_league node test-topscorers-dryrun.js
+ */
+
+const {
+  fetchTopScorers,
+  buildReferenceLookup,
+  syncLeagueTopScorers,
+  LEAGUES,
+} = require("./topscorers-sync-v2.js");
+
+// --- Mock Webflow reads: fake a small set of League/Team items -----------
+// Replace this with a real read from your Webflow collections if you want
+// to test reference-matching against your ACTUAL Leagues/Teams data instead
+// of this sample. Real test (recommended) is shown commented out below.
+
+const MOCK_LEAGUES_ITEMS = [
+  { id: "wf-league-1", fieldData: { name: "Premier League" } },
+  { id: "wf-league-2", fieldData: { name: "La Liga" } },
+  // ...add the rest of your real 8 leagues here for a fuller test
+];
+
+const MOCK_TEAMS_ITEMS = [
+  { id: "wf-team-1", fieldData: { name: "Manchester City" } },
+  { id: "wf-team-2", fieldData: { name: "Real Madrid" } },
+  // ...add real teams here, or swap in a live Webflow read (see below)
+];
+
+async function mockWebflowListItems(collectionId) {
+  if (collectionId === "leagues") return MOCK_LEAGUES_ITEMS;
+  if (collectionId === "teams") return MOCK_TEAMS_ITEMS;
+  return [];
+}
+
+// --- Mock Webflow write: just log instead of calling the API -------------
+
+async function mockWebflowUpsert(fieldData, matchInfo) {
+  console.log("\n--- Would upsert ---");
+  console.log(`Match on: ${matchInfo.matchField} = ${matchInfo.matchValue}`);
+  console.table({
+    name: fieldData.name,
+    rank: fieldData.rank,
+    goals: fieldData.goals,
+    assists: fieldData.assists,
+    nationality: fieldData.nationality,
+    season: fieldData.season,
+    photo: fieldData.photo ? fieldData.photo.slice(0, 60) + "..." : "(none)",
+    league_ref: fieldData.league || "(unresolved)",
+    team_ref: fieldData.team || "(unresolved)",
+  });
+  return { id: "mock-item-id", ...fieldData }; // fake response
+}
+
+// --- Run -------------------------------------------------------------------
+
+async function main() {
+  const leagueOnly = process.env.LEAGUE_ONLY;
+  const leaguesToTest = leagueOnly ? [leagueOnly] : Object.keys(LEAGUES);
+
+  if (leagueOnly && !LEAGUES[leagueOnly]) {
+    console.error(`Unknown league "${leagueOnly}". Valid keys: ${Object.keys(LEAGUES).join(", ")}`);
+    process.exit(1);
+  }
+
+  console.log(`Dry run for: ${leaguesToTest.join(", ")}  (season ${process.env.SEASON || "2025"})\n`);
+
+  const leagueLookup = await buildReferenceLookup(mockWebflowListItems, "leagues");
+  const teamLookup = await buildReferenceLookup(mockWebflowListItems, "teams");
+
+  let totalPlayers = 0;
+  let totalMissingPhoto = 0;
+
+  for (const leagueKey of leaguesToTest) {
+    const results = await syncLeagueTopScorers(leagueKey, mockWebflowUpsert, leagueLookup, teamLookup, { topN: 5 });
+    totalPlayers += results.length;
+  }
+
+  console.log(`\nDry run complete. ${totalPlayers} player rows processed (no writes made).`);
+  console.log("Check above for any 'No Webflow League/Team match' or 'No headshot' warnings.");
+}
+
+main().catch((err) => {
+  console.error("Dry run failed:", err);
+  process.exit(1);
+});
+
+/*
+ * --- To test against your REAL Webflow Leagues/Teams data instead of mocks ---
+ * Swap mockWebflowListItems for something like:
+ *
+ * async function realWebflowListItems(collectionId) {
+ *   const res = await fetch(`https://api.webflow.com/v2/collections/${collectionId}/items`, {
+ *     headers: { Authorization: `Bearer ${process.env.WEBFLOW_API_TOKEN}` },
+ *   });
+ *   const data = await res.json();
+ *   return data.items; // already { id, fieldData } shaped
+ * }
+ *
+ * Then call buildReferenceLookup(realWebflowListItems, YOUR_LEAGUES_COLLECTION_ID) etc.
+ * This still won't WRITE anything since mockWebflowUpsert only logs — it just
+ * makes the match-rate warnings meaningful against your actual data.
+ */
