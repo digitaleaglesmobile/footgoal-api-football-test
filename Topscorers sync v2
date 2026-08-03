@@ -1,0 +1,229 @@
+/**
+ * topscorers-sync.js  (v2 — matched to actual "Top Scorers" collection schema)
+ *
+ * Collection fields (from Webflow CMS settings):
+ *   Name            (Plain text)
+ *   Slug            (Plain text)
+ *   Goals           (Number)
+ *   Assists         (Number)
+ *   Photo           (Image)
+ *   Nationality     (Plain text)
+ *   Season          (Plain text)
+ *   League          (Reference -> "Leagues" collection)
+ *   Team            (Reference -> "Teams" collection)
+ *   scorer-badge    (Image)   <- NEVER written by this script, purpose unconfirmed
+ *   rank            (Number)
+ *   api-player-id   (Plain text)  <- used as the upsert matching key
+ *
+ * Fetches top scorers from API-Football and syncs them into that collection,
+ * for a given SEASON (defaults to 2025 per current use case).
+ */
+
+const API_BASE = "https://v3.football.api-sports.io";
+const API_KEY = process.env.API_FOOTBALL_KEY;
+const SEASON = process.env.SEASON || "2025";
+
+// Same league ID map used elsewhere in league-sync-v2
+const LEAGUES = {
+  premier_league: { id: 39, name: "Premier League" },
+  la_liga: { id: 140, name: "La Liga" },
+  bundesliga: { id: 78, name: "Bundesliga" },
+  serie_a: { id: 135, name: "Serie A" },
+  eredivisie: { id: 88, name: "Eredivisie" },
+  ligue_1: { id: 61, name: "Ligue 1" },
+  brasileirao: { id: 71, name: "Brasileirão" },
+};
+
+// -----------------------------------------------------------------------
+// 1. API-Football fetch
+// -----------------------------------------------------------------------
+
+async function fetchTopScorers(leagueId, season) {
+  const url = `${API_BASE}/players/topscorers?league=${leagueId}&season=${season}`;
+  const res = await fetch(url, { headers: { "x-apisports-key": API_KEY } });
+
+  if (!res.ok) {
+    throw new Error(`API-Football error for league ${leagueId}: ${res.status} ${res.statusText}`);
+  }
+
+  const data = await res.json();
+  if (data.errors && Object.keys(data.errors).length > 0) {
+    throw new Error(`API-Football errors for league ${leagueId}: ${JSON.stringify(data.errors)}`);
+  }
+
+  return data.response; // array, up to 20 players
+}
+
+// -----------------------------------------------------------------------
+// 2. Reference resolution: League / Team name|id -> Webflow item ID
+//
+// Builds lookup maps once per run by reading your existing "Leagues" and
+// "Teams" Webflow collections. Tries an API-ID field first (checking a few
+// common field-name variants), falls back to normalized name matching.
+// Swap `webflowListItems` for whatever your existing sync uses to read a
+// collection's items (a helper, or the Webflow MCP list-items tool).
+// -----------------------------------------------------------------------
+
+const API_ID_FIELD_CANDIDATES = ["api-football-id", "api-id", "apiId", "api-league-id", "api-team-id"];
+
+function normalizeName(str) {
+  return (str || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // strip accents
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function findApiIdField(item) {
+  for (const field of API_ID_FIELD_CANDIDATES) {
+    if (item.fieldData && item.fieldData[field] != null) {
+      return String(item.fieldData[field]);
+    }
+  }
+  return null;
+}
+
+/**
+ * Build a lookup: apiId (string) -> webflowItemId, AND normalizedName -> webflowItemId.
+ * Callers try the ID map first, fall back to the name map.
+ */
+async function buildReferenceLookup(webflowListItems, collectionId) {
+  const items = await webflowListItems(collectionId); // expects array of Webflow items with .id and .fieldData
+  const byApiId = new Map();
+  const byName = new Map();
+
+  for (const item of items) {
+    const apiId = findApiIdField(item);
+    if (apiId) byApiId.set(apiId, item.id);
+
+    const name = item.fieldData?.name;
+    if (name) byName.set(normalizeName(name), item.id);
+  }
+
+  return { byApiId, byName };
+}
+
+function resolveReference(lookup, { apiId, name }) {
+  if (apiId && lookup.byApiId.has(String(apiId))) {
+    return lookup.byApiId.get(String(apiId));
+  }
+  if (name && lookup.byName.has(normalizeName(name))) {
+    return lookup.byName.get(normalizeName(name));
+  }
+  return null; // not found — caller decides whether to skip the reference or log a warning
+}
+
+// -----------------------------------------------------------------------
+// 3. Map API-Football player -> Webflow field data
+// -----------------------------------------------------------------------
+
+function mapPlayerToCmsFields(player, rank, leagueMeta, leagueLookup, teamLookup) {
+  const stats = player.statistics[0];
+  const apiPlayerId = String(player.player.id);
+
+  const leagueItemId = resolveReference(leagueLookup, { apiId: leagueMeta.id, name: leagueMeta.name });
+  const teamItemId = resolveReference(teamLookup, { apiId: stats.team.id, name: stats.team.name });
+
+  if (!leagueItemId) {
+    console.warn(`No Webflow League match for "${leagueMeta.name}" (api id ${leagueMeta.id}) — leaving League reference unset`);
+  }
+  if (!teamItemId) {
+    console.warn(`No Webflow Team match for "${stats.team.name}" (api id ${stats.team.id}) — leaving Team reference unset`);
+  }
+
+  // Prefer the player's real headshot; fall back to the team logo only if
+  // API-Football has no photo on file for this player.
+  const photo = player.player.photo || stats.team.logo || null;
+  if (!player.player.photo) {
+    console.warn(`No headshot for ${player.player.name} — falling back to team logo`);
+  }
+
+  const fieldData = {
+    name: player.player.name,
+    slug: `${normalizeName(leagueMeta.name)}-${apiPlayerId}-${SEASON}`,
+    goals: stats.goals.total ?? 0,
+    assists: stats.goals.assists ?? 0,
+    photo,
+    nationality: player.player.nationality,
+    season: String(SEASON),
+    rank: rank + 1,
+    "api-player-id": apiPlayerId,
+    // scorer-badge intentionally omitted — not written by this script
+  };
+
+  if (leagueItemId) fieldData.league = leagueItemId;
+  if (teamItemId) fieldData.team = teamItemId;
+
+  return fieldData;
+}
+
+// -----------------------------------------------------------------------
+// 4. Sync — upsert matched by api-player-id (falls back to slug if a helper
+//    only supports slug-based upsert)
+// -----------------------------------------------------------------------
+
+async function syncLeagueTopScorers(leagueKey, webflowUpsert, leagueLookup, teamLookup, { topN = 20 } = {}) {
+  const leagueMeta = LEAGUES[leagueKey];
+  console.log(`Fetching top scorers: ${leagueMeta.name} (season ${SEASON})`);
+
+  const players = await fetchTopScorers(leagueMeta.id, SEASON);
+
+  if (!players || players.length === 0) {
+    console.log(`No top scorer data yet for ${leagueMeta.name} season ${SEASON} — skipping (season likely not started).`);
+    return [];
+  }
+
+  const trimmed = players.slice(0, topN);
+  const results = [];
+
+  for (const [i, player] of trimmed.entries()) {
+    const fieldData = mapPlayerToCmsFields(player, i, leagueMeta, leagueLookup, teamLookup);
+    try {
+      // webflowUpsert should match on api-player-id where possible;
+      // pass fieldData through as-is to your existing helper.
+      const item = await webflowUpsert(fieldData, { matchField: "api-player-id", matchValue: fieldData["api-player-id"] });
+      results.push({ name: fieldData.name, status: "ok", item });
+    } catch (err) {
+      console.error(`Failed to upsert ${fieldData.name}:`, err.message);
+      results.push({ name: fieldData.name, status: "error", error: err.message });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * webflowListItems(collectionId) -> array of { id, fieldData } for an existing collection
+ * webflowUpsert(fieldData, { matchField, matchValue }) -> creates/updates a Top Scorers item
+ * leaguesCollectionId / teamsCollectionId -> your Webflow "Leagues" / "Teams" collection IDs
+ */
+async function syncAllTopScorers(webflowListItems, webflowUpsert, leaguesCollectionId, teamsCollectionId) {
+  const leagueLookup = await buildReferenceLookup(webflowListItems, leaguesCollectionId);
+  const teamLookup = await buildReferenceLookup(webflowListItems, teamsCollectionId);
+
+  const summary = {};
+  for (const leagueKey of Object.keys(LEAGUES)) {
+    try {
+      const results = await syncLeagueTopScorers(leagueKey, webflowUpsert, leagueLookup, teamLookup);
+      summary[leagueKey] = {
+        synced: results.filter((r) => r.status === "ok").length,
+        failed: results.filter((r) => r.status === "error").length,
+      };
+    } catch (err) {
+      console.error(`League ${leagueKey} top scorers sync failed entirely:`, err.message);
+      summary[leagueKey] = { synced: 0, failed: "all", error: err.message };
+    }
+    await new Promise((r) => setTimeout(r, 500)); // gentle pacing between leagues
+  }
+
+  console.log("Top scorers sync summary:", summary);
+  return summary;
+}
+
+module.exports = {
+  fetchTopScorers,
+  buildReferenceLookup,
+  syncLeagueTopScorers,
+  syncAllTopScorers,
+  LEAGUES,
+};
