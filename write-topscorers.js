@@ -111,6 +111,17 @@ async function main() {
   var allItems = await wfGetAllItems(TOP_SCORERS_COLLECTION_ID);
   console.log('Found ' + allItems.length + ' CMS items total.\n');
 
+  // One-time schema debug: print the raw field keys Webflow actually uses,
+  // so we can catch slug mismatches (e.g. "api-player-id" vs something else)
+  // before relying on them below.
+  if (allItems.length > 0) {
+    console.log('--- DEBUG: raw fieldData keys on first item ---');
+    console.log(Object.keys(allItems[0].fieldData));
+    console.log('--- DEBUG: raw fieldData for first item ---');
+    console.log(JSON.stringify(allItems[0].fieldData, null, 2));
+    console.log('--- END DEBUG ---\n');
+  }
+
   var toWrite = [];
   var noMatch = [];
 
