@@ -36,14 +36,50 @@ if (!API_FOOTBALL_KEY || !WEBFLOW_TOKEN) {
 
 // ---- helpers -------------------------------------------------------------
 
-async function apiFootball(path) {
-  const res = await fetch(`${API_FOOTBALL_BASE}${path}`, {
-    headers: { "x-apisports-key": API_FOOTBALL_KEY },
-  });
-  if (!res.ok) {
-    throw new Error(`API-Football ${path} -> ${res.status} ${res.statusText}`);
+async function apiFootball(path, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const res = await fetch(`${API_FOOTBALL_BASE}${path}`, {
+      headers: { "x-apisports-key": API_FOOTBALL_KEY },
+    });
+
+    if (res.status === 429) {
+      // Rate limited — back off and retry.
+      const wait = attempt * 2000;
+      console.warn(`Rate limited on ${path}, waiting ${wait}ms (attempt ${attempt}/${retries})`);
+      await sleep(wait);
+      continue;
+    }
+
+    if (!res.ok) {
+      if (attempt < retries) {
+        const wait = attempt * 1000;
+        console.warn(
+          `API-Football ${path} -> ${res.status}, retrying in ${wait}ms (attempt ${attempt}/${retries})`
+        );
+        await sleep(wait);
+        continue;
+      }
+      throw new Error(`API-Football ${path} -> ${res.status} ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    // API-Football sometimes returns 200 with an "errors" object (e.g. quota,
+    // invalid params) instead of an HTTP error code — treat that as a failure too.
+    if (data.errors && Object.keys(data.errors).length > 0) {
+      if (attempt < retries) {
+        const wait = attempt * 1000;
+        console.warn(
+          `API-Football ${path} returned errors: ${JSON.stringify(data.errors)}, retrying in ${wait}ms`
+        );
+        await sleep(wait);
+        continue;
+      }
+      throw new Error(`API-Football ${path} returned errors: ${JSON.stringify(data.errors)}`);
+    }
+
+    return data;
   }
-  return res.json();
+  throw new Error(`API-Football ${path} failed after ${retries} attempts`);
 }
 
 async function webflow(path, options = {}) {
@@ -95,21 +131,44 @@ async function getAllTeams() {
 // ---- API-Football lookups ---------------------------------------------
 
 // Returns the current coach's name for a given API-Football team id, or null.
+//
+// IMPORTANT: API-Football sometimes has more than one career entry marked
+// end:null for the same team (stale/duplicate data on their side) — e.g.
+// it returned "J. Heynckes" for Bayern Munich, who left in 2018. Trusting
+// end:null alone is not reliable. Instead, collect ALL end:null entries for
+// this team across all coaches, then pick the one with the most recent
+// "start" date — that's the actual current appointment.
 async function getCurrentCoach(apiTeamId) {
   const data = await apiFootball(`/coachs?team=${apiTeamId}`);
   if (!data.response || data.response.length === 0) return null;
 
-  // API-Football returns all coaches associated with the team historically.
-  // Find the one whose career entry for this team has no "end" date (current).
+  let best = null; // { name, start }
   for (const coach of data.response) {
     const career = coach.career || [];
-    const current = career.find(
-      (c) => c.team && c.team.id === Number(apiTeamId) && c.end === null
-    );
-    if (current) return coach.name;
+    for (const c of career) {
+      if (!c.team || c.team.id !== Number(apiTeamId)) continue;
+      if (c.end !== null) continue; // only open-ended (current) stints
+      if (!c.start) continue;
+      if (!best || new Date(c.start) > new Date(best.start)) {
+        best = { name: coach.name, start: c.start };
+      }
+    }
   }
-  // Fallback: if nothing marked "current", just take the first result's name.
-  return data.response[0].name || null;
+  if (best) return best.name;
+
+  // Fallback: nothing marked current at all — take the entry with the most
+  // recent start date regardless of end, better than a random pick.
+  let mostRecent = null;
+  for (const coach of data.response) {
+    const career = coach.career || [];
+    for (const c of career) {
+      if (!c.team || c.team.id !== Number(apiTeamId) || !c.start) continue;
+      if (!mostRecent || new Date(c.start) > new Date(mostRecent.start)) {
+        mostRecent = { name: coach.name, start: c.start };
+      }
+    }
+  }
+  return mostRecent ? mostRecent.name : null;
 }
 
 // Returns stadium capacity for a given API-Football team id, or null.
@@ -162,7 +221,7 @@ async function main() {
           continue;
         }
         apiTeamId = resolvedId;
-        await sleep(250); // be polite to the API
+        await sleep(600); // be polite to the API
       } catch (err) {
         console.error(`Name lookup failed for "${fd.name}": ${err.message}`);
         unresolved.push(fd.name);
@@ -171,11 +230,12 @@ async function main() {
     }
 
     try {
-      const [manager, capacity] = await Promise.all([
-        fd.manager ? Promise.resolve(fd.manager) : getCurrentCoach(apiTeamId),
-        fd.capacity ? Promise.resolve(fd.capacity) : getCapacity(apiTeamId),
-      ]);
-      await sleep(250); // rate-limit friendliness
+      // Sequential, not Promise.all — keeps request pacing predictable and
+      // avoids bursts that trip rate limiting.
+      const manager = fd.manager ? fd.manager : await getCurrentCoach(apiTeamId);
+      await sleep(600);
+      const capacity = fd.capacity ? fd.capacity : await getCapacity(apiTeamId);
+      await sleep(600); // rate-limit friendliness
 
       const patch = {};
       if (!fd.manager && manager) patch.manager = manager;
