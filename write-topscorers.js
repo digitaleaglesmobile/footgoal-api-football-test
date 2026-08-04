@@ -19,6 +19,7 @@ const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
 const CONFIRM = process.env.CONFIRM === 'yes';
 
 const TOP_SCORERS_COLLECTION_ID = '6a32a89633c9bd6bea624094';
+const TEAMS_COLLECTION_ID = '6a20064807685f373db26660';
 
 var LEAGUES = [
   { code: 'PL',  name: 'Premier League',    api_id: 39,  webflow_id: '6a32a9cb63396a5393212f3a', season: 2026 },
@@ -104,6 +105,30 @@ async function wfPatchItem(collectionId, itemId, fieldData) {
   return res.json();
 }
 
+// Create a new item (used when a player has broken into the top N but has
+// no existing CMS match). isDraft:false + published so it behaves the same
+// as your existing live items rather than sitting hidden as a draft.
+async function wfCreateItem(collectionId, fieldData) {
+  var res = await fetch(
+    'https://api.webflow.com/v2/collections/' + collectionId + '/items',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + WEBFLOW_TOKEN,
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ fieldData: fieldData, isDraft: false }),
+    }
+  );
+  if (!res.ok) throw new Error('Webflow CREATE item: ' + res.status + ' ' + (await res.text()));
+  return res.json();
+}
+
+function slugify(str) {
+  return normalizeName(str).trim().replace(/\s+/g, '-');
+}
+
 async function main() {
   console.log(CONFIRM ? '*** LIVE MODE: will write to Webflow ***\n' : 'Preview mode (no writes). Pass CONFIRM=yes to actually write.\n');
 
@@ -111,19 +136,22 @@ async function main() {
   var allItems = await wfGetAllItems(TOP_SCORERS_COLLECTION_ID);
   console.log('Found ' + allItems.length + ' CMS items total.\n');
 
-  // One-time schema debug: print the raw field keys Webflow actually uses,
-  // so we can catch slug mismatches (e.g. "api-player-id" vs something else)
-  // before relying on them below.
-  if (allItems.length > 0) {
-    console.log('--- DEBUG: raw fieldData keys on first item ---');
-    console.log(Object.keys(allItems[0].fieldData));
-    console.log('--- DEBUG: raw fieldData for first item ---');
-    console.log(JSON.stringify(allItems[0].fieldData, null, 2));
-    console.log('--- END DEBUG ---\n');
+  console.log('Fetching Teams collection for reference lookups...');
+  var allTeams = await wfGetAllItems(TEAMS_COLLECTION_ID);
+  console.log('Found ' + allTeams.length + ' team items.\n');
+
+  function findTeamWebflowId(apiTeamName) {
+    for (var t = 0; t < allTeams.length; t++) {
+      var teamName = allTeams[t].fieldData && allTeams[t].fieldData.name;
+      if (teamName && namesRoughlyMatch(teamName, apiTeamName)) return allTeams[t].id;
+    }
+    return null;
   }
 
   var toWrite = [];
+  var toCreate = [];
   var noMatch = [];
+  var droppedOut = [];
 
   for (var i = 0; i < LEAGUES.length; i++) {
     var league = LEAGUES[i];
@@ -139,6 +167,9 @@ async function main() {
       console.log('  No topscorers data for ' + league.name + ' - skipping.\n');
       continue;
     }
+
+    var topN = leagueItems.length; // keep the same slot count this league already has
+    var matchedApiPlayerIds = {};
 
     for (var j = 0; j < leagueItems.length; j++) {
       var item = leagueItems[j];
@@ -167,8 +198,13 @@ async function main() {
 
       var stats = apiEntry.statistics[0];
       var newRank = apiList.indexOf(apiEntry) + 1; // current true rank, corrects any drift
+      matchedApiPlayerIds[String(apiEntry.player.id)] = true;
 
       var photo = apiEntry.player.photo || (stats.team && stats.team.logo) || null;
+
+      if (newRank > topN) {
+        droppedOut.push({ cmsName: item.fieldData.name, league: league.name, newRank: newRank });
+      }
 
       toWrite.push({
         cmsId: item.id,
@@ -185,9 +221,41 @@ async function main() {
         },
       });
     }
+
+    // Fill any gap: a player in the true top N who has no matching CMS item yet.
+    for (var p = 0; p < Math.min(topN, apiList.length); p++) {
+      var candidate = apiList[p];
+      var candidateId = String(candidate.player.id);
+      if (matchedApiPlayerIds[candidateId]) continue; // already have this player
+
+      var cStats = candidate.statistics[0];
+      var teamWfId = findTeamWebflowId(cStats.team.name);
+      if (!teamWfId) {
+        console.warn('  No Webflow Team match for "' + cStats.team.name + '" - skipping new item for ' + candidate.player.name);
+        continue;
+      }
+
+      toCreate.push({
+        cmsName: candidate.player.name,
+        league: league.name,
+        fieldData: {
+          name: candidate.player.name,
+          slug: slugify(candidate.player.name) + '-' + league.code.toLowerCase() + '-' + league.season,
+          'api-player-id': candidateId,
+          goals: cStats.goals.total || 0,
+          assists: cStats.goals.assists || 0,
+          nationality: candidate.player.nationality,
+          photo: candidate.player.photo || cStats.team.logo || null,
+          season: String(league.season),
+          league: league.webflow_id,
+          team: teamWfId,
+          rank: p + 1,
+        },
+      });
+    }
   }
 
-  console.log('\n========== ' + (CONFIRM ? 'WRITING' : 'WOULD WRITE') + ' ==========\n');
+  console.log('\n========== ' + (CONFIRM ? 'UPDATING EXISTING' : 'WOULD UPDATE') + ' ==========\n');
   for (var k = 0; k < toWrite.length; k++) {
     var w = toWrite[k];
     console.log('[' + w.method + '] ' + w.league + ': "' + w.cmsName + '" -> api-player-id=' + w.fieldData['api-player-id'] +
@@ -205,10 +273,34 @@ async function main() {
     }
   }
 
+  console.log('\n========== ' + (CONFIRM ? 'CREATING NEW ITEMS' : 'WOULD CREATE') + ' ==========\n');
+  for (var c = 0; c < toCreate.length; c++) {
+    var nc = toCreate[c];
+    console.log('[NEW] ' + nc.league + ': "' + nc.cmsName + '" -> rank=' + nc.fieldData.rank +
+      ', goals=' + nc.fieldData.goals + ', api-player-id=' + nc.fieldData['api-player-id']);
+
+    if (CONFIRM) {
+      try {
+        await wfCreateItem(TOP_SCORERS_COLLECTION_ID, nc.fieldData);
+        console.log('  -> created OK');
+      } catch (err) {
+        console.error('  -> FAILED: ' + err.message);
+      }
+      await sleep(300);
+    }
+  }
+
   console.log('\n========== SUMMARY ==========');
-  console.log((CONFIRM ? 'Written' : 'Would write') + ': ' + toWrite.length);
+  console.log((CONFIRM ? 'Updated' : 'Would update') + ': ' + toWrite.length);
+  console.log((CONFIRM ? 'Created' : 'Would create') + ': ' + toCreate.length);
+  if (droppedOut.length) {
+    console.log('\nDropped out of top N (still updated with real stats, but consider manually removing/archiving):');
+    for (var d = 0; d < droppedOut.length; d++) {
+      console.log('  - ' + droppedOut[d].cmsName + ' (' + droppedOut[d].league + '), now true rank ' + droppedOut[d].newRank);
+    }
+  }
   if (noMatch.length) {
-    console.log('Unmatched (needs manual review, not touched):');
+    console.log('\nUnmatched (needs manual review, not touched):');
     for (var n = 0; n < noMatch.length; n++) {
       console.log('  - ' + noMatch[n].cmsName + ' (' + noMatch[n].league + ')');
     }
