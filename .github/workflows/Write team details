@@ -1,0 +1,28 @@
+name: Write Team Details (Manager & Capacity)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'yes' to actually write to Webflow. Leave blank for a dry run."
+        required: false
+        default: ""
+
+jobs:
+  sync-team-details:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run write-team-details.js
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: node write-team-details.js
