@@ -22,6 +22,11 @@ const CONFIRM = process.env.CONFIRM === 'yes';
 const TOP_SCORERS_COLLECTION_ID = '6a32a89633c9bd6bea624094';
 const TEAMS_COLLECTION_ID = '6a20064807685f373db26660';
 
+// Fixed target list size per league. This does NOT grow with the number of
+// existing CMS items - it's the stable cap the script always aims for, so
+// re-running repeatedly (e.g. every 4h) does not keep expanding the list.
+const TARGET_TOP_N = 10;
+
 var LEAGUES = [
   { code: 'PL',  name: 'Premier League',    api_id: 39,  webflow_id: '6a32a9cb63396a5393212f3a', season: 2026 },
   { code: 'LL',  name: 'La Liga',            api_id: 140, webflow_id: '6a32a9cb63396a5393212f3e', season: 2026 },
@@ -185,7 +190,7 @@ async function main() {
       continue;
     }
 
-    var topN = leagueItems.length;
+    var topN = TARGET_TOP_N;
     var matchedApiPlayerIds = {};
 
     for (var j = 0; j < leagueItems.length; j++) {
