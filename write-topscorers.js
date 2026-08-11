@@ -86,8 +86,6 @@ async function wfGetAllItems(collectionId) {
   return items;
 }
 
-// PATCH a single item's fieldData. Webflow v2 PATCH is partial - only the
-// fields you send get updated, everything else on the item is untouched.
 async function wfPatchItem(collectionId, itemId, fieldData) {
   var res = await fetch(
     'https://api.webflow.com/v2/collections/' + collectionId + '/items/' + itemId,
@@ -105,9 +103,6 @@ async function wfPatchItem(collectionId, itemId, fieldData) {
   return res.json();
 }
 
-// Create a new item (used when a player has broken into the top N but has
-// no existing CMS match). isDraft:false + published so it behaves the same
-// as your existing live items rather than sitting hidden as a draft.
 async function wfCreateItem(collectionId, fieldData) {
   var res = await fetch(
     'https://api.webflow.com/v2/collections/' + collectionId + '/items',
@@ -168,7 +163,7 @@ async function main() {
       continue;
     }
 
-    var topN = leagueItems.length; // keep the same slot count this league already has
+    var topN = leagueItems.length;
     var matchedApiPlayerIds = {};
 
     for (var j = 0; j < leagueItems.length; j++) {
@@ -197,10 +192,10 @@ async function main() {
       }
 
       var stats = apiEntry.statistics[0];
-      var newRank = apiList.indexOf(apiEntry) + 1; // current true rank, corrects any drift
+      var newRank = apiList.indexOf(apiEntry) + 1;
       matchedApiPlayerIds[String(apiEntry.player.id)] = true;
 
-      var photo = apiEntry.player.photo || (stats.team && stats.team.logo) || null;
+      var photoUrl = apiEntry.player.photo || (stats.team && stats.team.logo) || null;
 
       if (newRank > topN) {
         droppedOut.push({ cmsName: item.fieldData.name, league: league.name, newRank: newRank });
@@ -216,17 +211,16 @@ async function main() {
           goals: stats.goals.total || 0,
           assists: stats.goals.assists || 0,
           nationality: apiEntry.player.nationality,
-          photo: photo,
+          photo: photoUrl ? { url: photoUrl } : null,
           rank: newRank,
         },
       });
     }
 
-    // Fill any gap: a player in the true top N who has no matching CMS item yet.
     for (var p = 0; p < Math.min(topN, apiList.length); p++) {
       var candidate = apiList[p];
       var candidateId = String(candidate.player.id);
-      if (matchedApiPlayerIds[candidateId]) continue; // already have this player
+      if (matchedApiPlayerIds[candidateId]) continue;
 
       var cStats = candidate.statistics[0];
       var teamWfId = findTeamWebflowId(cStats.team.name);
@@ -234,6 +228,8 @@ async function main() {
         console.warn('  No Webflow Team match for "' + cStats.team.name + '" - skipping new item for ' + candidate.player.name);
         continue;
       }
+
+      var newPhotoUrl = candidate.player.photo || cStats.team.logo || null;
 
       toCreate.push({
         cmsName: candidate.player.name,
@@ -245,7 +241,7 @@ async function main() {
           goals: cStats.goals.total || 0,
           assists: cStats.goals.assists || 0,
           nationality: candidate.player.nationality,
-          photo: candidate.player.photo || cStats.team.logo || null,
+          photo: newPhotoUrl ? { url: newPhotoUrl } : null,
           season: String(league.season),
           league: league.webflow_id,
           team: teamWfId,
@@ -269,7 +265,7 @@ async function main() {
       } catch (err) {
         console.error('  -> FAILED: ' + err.message);
       }
-      await sleep(300); // gentle pacing on Webflow writes
+      await sleep(300);
     }
   }
 
