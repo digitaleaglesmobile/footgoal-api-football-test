@@ -1,16 +1,17 @@
 // ============================================================
 // write-topscorers.js - footgoal.co
-// Extends match-topscorers-dryrun.js: same rank/name matching logic,
-// but actually PATCHes the matched Webflow CMS items with:
+// Same rank/name matching logic as match-topscorers-dryrun.js, but
+// actually PATCHes/CREATEs the matched Webflow CMS items with:
 //   api-player-id, goals, assists, photo, nationality, rank (recalculated)
+// AND publishes them, so changes actually go live on the site.
 //
-// SAFETY: defaults to dry-run printing even here. Nothing is written
-// to Webflow unless you explicitly pass CONFIRM=yes.
+// SAFETY: defaults to dry-run printing. Nothing is written to Webflow
+// unless you explicitly pass CONFIRM=yes.
 //
-// USAGE (safe preview, same as before, no writes):
+// USAGE (safe preview, no writes):
 //   node write-topscorers.js
 //
-// USAGE (actually writes to Webflow):
+// USAGE (writes + publishes to Webflow):
 //   CONFIRM=yes node write-topscorers.js
 // ============================================================
 
@@ -120,12 +121,32 @@ async function wfCreateItem(collectionId, fieldData) {
   return res.json();
 }
 
+// Publishes items so changes actually go live on the site - without this,
+// PATCH/CREATE changes can sit "saved but not live" on the published domain.
+async function wfPublishItems(collectionId, itemIds) {
+  if (!itemIds.length) return;
+  for (var i = 0; i < itemIds.length; i += 100) {
+    var batch = itemIds.slice(i, i + 100);
+    var res = await fetch('https://api.webflow.com/v2/collections/' + collectionId + '/items/publish', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + WEBFLOW_TOKEN,
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ itemIds: batch }),
+    });
+    if (!res.ok) console.warn('Publish warning: ' + (await res.text()));
+    await sleep(500);
+  }
+}
+
 function slugify(str) {
   return normalizeName(str).trim().replace(/\s+/g, '-');
 }
 
 async function main() {
-  console.log(CONFIRM ? '*** LIVE MODE: will write to Webflow ***\n' : 'Preview mode (no writes). Pass CONFIRM=yes to actually write.\n');
+  console.log(CONFIRM ? '*** LIVE MODE: will write + publish to Webflow ***\n' : 'Preview mode (no writes). Pass CONFIRM=yes to actually write.\n');
 
   console.log('Fetching existing Top Scorers CMS items...');
   var allItems = await wfGetAllItems(TOP_SCORERS_COLLECTION_ID);
@@ -147,6 +168,7 @@ async function main() {
   var toCreate = [];
   var noMatch = [];
   var droppedOut = [];
+  var publishedIds = []; // collected as we go, published once at the end
 
   for (var i = 0; i < LEAGUES.length; i++) {
     var league = LEAGUES[i];
@@ -261,6 +283,7 @@ async function main() {
     if (CONFIRM) {
       try {
         await wfPatchItem(TOP_SCORERS_COLLECTION_ID, w.cmsId, w.fieldData);
+        publishedIds.push(w.cmsId);
         console.log('  -> written OK');
       } catch (err) {
         console.error('  -> FAILED: ' + err.message);
@@ -277,13 +300,20 @@ async function main() {
 
     if (CONFIRM) {
       try {
-        await wfCreateItem(TOP_SCORERS_COLLECTION_ID, nc.fieldData);
+        var created = await wfCreateItem(TOP_SCORERS_COLLECTION_ID, nc.fieldData);
+        publishedIds.push(created.id);
         console.log('  -> created OK');
       } catch (err) {
         console.error('  -> FAILED: ' + err.message);
       }
       await sleep(300);
     }
+  }
+
+  if (CONFIRM && publishedIds.length) {
+    console.log('\nPublishing ' + publishedIds.length + ' item(s) so changes go live...');
+    await wfPublishItems(TOP_SCORERS_COLLECTION_ID, publishedIds);
+    console.log('Publish complete.');
   }
 
   console.log('\n========== SUMMARY ==========');
