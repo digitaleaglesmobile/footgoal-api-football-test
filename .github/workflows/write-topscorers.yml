@@ -1,22 +1,26 @@
-name: Write Top Scorers (preview or live)
+name: Sync Top Scorers (every 4 hours)
+
 on:
-  workflow_dispatch:
-    inputs:
-      confirm:
-        description: 'Type "yes" to actually write to Webflow. Leave blank for preview only.'
-        required: false
-        default: ''
+  workflow_dispatch: {}   # lets you also trigger it manually anytime
+  schedule:
+    - cron: '0 */4 * * *'  # every 4 hours, on the hour (UTC)
+
+concurrency:
+  group: sync-topscorers
+  cancel-in-progress: false
+
 jobs:
-  write:
+  sync-topscorers:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Run write script
+      - name: Run write-topscorers (live mode)
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
-          CONFIRM: ${{ github.event.inputs.confirm }}
+          CONFIRM: 'yes'
         run: node write-topscorers.js
