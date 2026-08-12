@@ -1,12 +1,13 @@
 // ============================================================
 // squads-fetch.js — footgoal.co Predicted XI
-// Fetches the FULL current squad for all 20 Premier League teams from
-// API-Football and saves the results to a single local JSON file.
-// Does NOT touch Supabase — safe to run anytime, paused DB or not.
-// Run squads-import.js afterward (whenever Supabase is resumed) to
-// load this saved file into the players table.
+// Fetches the FULL current squad (every player, not just starters) for
+// all 20 Premier League teams from API-Football and saves everything to
+// one local JSON file: squads-all-teams.json
 //
-// Usage:
+// Does NOT use Supabase or any database — this is the whole data
+// pipeline for now, per the "just download it, no DB" decision.
+//
+// Usage (local terminal):
 //   API_FOOTBALL_KEY=your_key node squads-fetch.js
 // ============================================================
 
@@ -103,7 +104,6 @@ async function main() {
   const outPath = 'squads-all-teams.json';
   fs.writeFileSync(outPath, JSON.stringify(output, null, 2));
   console.log('Saved all squads to ' + outPath);
-  console.log('Next step: resume Supabase when ready, then run squads-import.js against this file.');
 }
 
 main().catch((err) => {
