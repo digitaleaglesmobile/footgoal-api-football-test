@@ -1,26 +1,22 @@
-name: Predicted XI - Squads Sync
+name: Squads Fetch (test)
 
 on:
-  schedule:
-    # Monthly baseline, 1st of the month at 04:00 UTC — squads barely move
-    # outside transfer windows, so this is the low-cost default.
-    - cron: '0 4 1 * *'
-  workflow_dispatch: {} # manual "Run workflow" button in GitHub Actions —
-                        # use this right after a transfer breaks, or during
-                        # the June-Sept / January windows if you want tighter
-                        # coverage than the monthly default.
+  workflow_dispatch: {} # manual "Run workflow" button only, for now
 
 jobs:
-  sync:
+  fetch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Run squads sync
+      - name: Run squads fetch
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
-        run: node squads-sync.js
+        run: node squads-fetch.js
+      - name: Upload result as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: squads-all-teams
+          path: squads-all-teams.json
