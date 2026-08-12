@@ -1,0 +1,21 @@
+name: Diagnose Matches (read-only)
+# Manual only — this workflow does NOT run automatically, ever.
+# It only runs when you click "Run workflow" in the Actions tab.
+# Makes ZERO writes to Webflow or Supabase — read-only diagnostic.
+on:
+  workflow_dispatch: {}
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run diagnostic (read-only)
+        run: node diagnose-matches.js
+        env:
+          WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
