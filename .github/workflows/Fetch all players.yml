@@ -1,0 +1,29 @@
+name: Fetch All Premier League Players
+
+on:
+  workflow_dispatch: {} # click "Run workflow" in the Actions tab to trigger
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run squads fetch
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+        run: node squads-fetch.js
+
+      # This step is the one that was missing before — without it, the
+      # JSON file gets deleted the moment the job finishes, since GitHub
+      # Actions runners are temporary. This step saves it as a downloadable
+      # zip attached to the workflow run.
+      - name: Upload result as downloadable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: squads-all-teams
+          path: squads-all-teams.json
