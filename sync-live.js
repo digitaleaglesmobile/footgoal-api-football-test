@@ -212,6 +212,25 @@ async function wfPublishItems(collectionId, itemIds) {
   }
 }
 
+// Full SITE publish - without this, item-level publishes above can sit
+// "queued to publish" indefinitely, since item publishing alone does not
+// push the compiled site out to the live domains. This is what actually
+// makes changes visible on footgoal.co / www.footgoal.co.
+var SITE_ID = '69c3c0d82fd37856ad9e297a';
+var CUSTOM_DOMAINS = ['69c4fc77a50ac7d07e84308a', '69c4fc76a50ac7d07e843018']; // footgoal.co, www.footgoal.co
+async function wfPublishSite() {
+  var res = await fetch('https://api.webflow.com/v2/sites/' + SITE_ID + '/publish', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + WEBFLOW_TOKEN, 'Content-Type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ customDomains: CUSTOM_DOMAINS, publishToWebflowSubdomain: true })
+  });
+  if (!res.ok) {
+    console.warn('Site publish warning: ' + (await res.text()));
+  } else {
+    console.log('Site published to footgoal.co / www.footgoal.co.');
+  }
+}
+
 // ── STEP 1: THE ONE CHEAP CALL ─────────────────────────────────
 // /fixtures?live=all returns every fixture currently in progress across
 // every league your plan covers, in a single API call. This is the gate.
@@ -339,6 +358,8 @@ async function main() {
       console.error(league.name + ' [LIVE] failed: ' + err.message);
     }
   }
+
+  await wfPublishSite();
   console.log('sync-live.js tick complete.');
 }
 
