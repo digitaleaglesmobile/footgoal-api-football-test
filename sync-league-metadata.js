@@ -715,7 +715,7 @@ async function main() {
 
       update[
         fieldMap.goalsPerGame.slug
-      ] = meta.goalsPerGame;
+      ] = String(meta.goalsPerGame);
     }
 
 
