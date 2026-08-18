@@ -1,9 +1,9 @@
-name: Sync Top Scorers (every 4 hours)
+name: Sync Top Scorers 2026 (every 4 hours)
 
 on:
-  workflow_dispatch: {}   # lets you also trigger it manually anytime
+  workflow_dispatch: {}
   schedule:
-    - cron: '0 */4 * * *'  # every 4 hours, on the hour (UTC)
+    - cron: '0 */4 * * *'
 
 concurrency:
   group: sync-topscorers
@@ -12,15 +12,20 @@ concurrency:
 jobs:
   sync-topscorers:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Run write-topscorers (live mode)
+
+      - name: Run safe 2026 top scorers sync
+        run: node sync-top-scorers-2026.js
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
           CONFIRM: 'yes'
-        run: node write-topscorers.js
