@@ -1,0 +1,29 @@
+name: Top Scorers 2026 Live Sync
+
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: top-scorers-2026-live
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run live 2026 top scorers sync
+        run: node sync-top-scorers-2026.js
+        env:
+          WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          CONFIRM: 'yes'
