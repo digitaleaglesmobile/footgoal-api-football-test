@@ -1,366 +1,1488 @@
 // ============================================================
 // sync-live.js — footgoal.co
-// LIGHTWEIGHT, 1-MINUTE-SAFE companion to league-sync-v2-dryrun.js.
 //
-// Designed to be triggered every ~60s by an external pinger (cron-job.org,
-// EasyCron, etc. hitting GitHub's workflow_dispatch/repository_dispatch API
-// — GitHub's own `schedule:` trigger cannot go below 5 minutes).
+// Lightweight live-score sync for the 7 active leagues.
+// Intended to be triggered about once per minute by an external pinger.
 //
-// COST MODEL PER RUN:
-//   - Nothing live right now:  1 API-Football call total. No Webflow calls.
-//   - Something live:         1 + (1 per league with a live match) API-Football
-//                              calls, only for the league(s) actually playing.
+// Normal minute:
+// - 1 API-Football call: /fixtures?live=all
+// - if no target-league match is live, no Webflow calls/writes
 //
-// This does NOT sync Teams and does NOT do a full Standings/Matches sweep of
-// all 7 leagues every tick — that's still league-sync-v2-dryrun.js's job, on
-// its own slower schedule (e.g. every 30 min) as the safety net that catches
-// anything this script's narrower scope might miss.
+// Every 5th minute:
+// - also checks recently finished fixtures (last 4 hours)
+// - catches the final FT/AET/PEN score/status after a match disappears
+//   from /fixtures?live=all
+//
+// IMPORTANT OPTIMIZATION:
+// - NEVER fetches the whole 2,000+ Matches collection
+// - looks up each relevant Webflow match by its exact deterministic slug
+// - writes only if score/status actually changed
+// - standings sync only when a match has just transitioned to Played
+// - does NOT create missing match items; full sync is the safety net
 // ============================================================
 
-const SUPABASE_URL  = process.env.SUPABASE_URL;   // unused here, kept for parity
 const WEBFLOW_TOKEN = process.env.WEBFLOW_TOKEN;
 const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
 
 const WF = {
-  TEAMS:      '6a20064807685f373db26660',
-  STANDINGS:  '6a200649847c9fcb9278de02',
-  MATCHES:    '6a200649c668e2cb8f11e82b',
+  TEAMS: '6a20064807685f373db26660',
+  STANDINGS: '6a200649847c9fcb9278de02',
+  MATCHES: '6a200649c668e2cb8f11e82b'
 };
 
-const LEAGUES = [
-  { code: 'PL',  name: 'Premier League',        api_id: 39,  webflow_id: '6a32a9cb63396a5393212f3a', season: 2026 },
-  { code: 'LL',  name: 'La Liga',                api_id: 140, webflow_id: '6a32a9cb63396a5393212f3e', season: 2026 },
-  { code: 'BL',  name: 'Bundesliga',             api_id: 78,  webflow_id: '6a32a9cb63396a5393212f40', season: 2026 },
-  { code: 'SA',  name: 'Serie A',                api_id: 135, webflow_id: '6a32a9cb63396a5393212f42', season: 2026 },
-  { code: 'ERE', name: 'Eredivisie',             api_id: 88,  webflow_id: '6a32a9cb63396a5393212f44', season: 2026 },
-  { code: 'L1',  name: 'Ligue 1',                api_id: 61,  webflow_id: '6a32a9cb63396a5393212f46', season: 2026 },
-  { code: 'BSA', name: 'Brasileiro Série A',     api_id: 71,  webflow_id: '6a32a9cb63396a5393212f48', season: 2026 },
+const SITE_ID = '69c3c0d82fd37856ad9e297a';
+
+const CUSTOM_DOMAINS = [
+  '69c4fc77a50ac7d07e84308a',
+  '69c4fc76a50ac7d07e843018'
 ];
 
-const DELAY_MS = 200;
-const WEBFLOW_WRITE_DELAY_MS = 800;
-const MATCH_CONCURRENCY = 6;
+const LEAGUES = [
+  {
+    code: 'PL',
+    name: 'Premier League',
+    api_id: 39,
+    webflow_id: '6a32a9cb63396a5393212f3a',
+    season: 2026
+  },
+  {
+    code: 'LL',
+    name: 'La Liga',
+    api_id: 140,
+    webflow_id: '6a32a9cb63396a5393212f3e',
+    season: 2026
+  },
+  {
+    code: 'BL',
+    name: 'Bundesliga',
+    api_id: 78,
+    webflow_id: '6a32a9cb63396a5393212f40',
+    season: 2026
+  },
+  {
+    code: 'SA',
+    name: 'Serie A',
+    api_id: 135,
+    webflow_id: '6a32a9cb63396a5393212f42',
+    season: 2026
+  },
+  {
+    code: 'ERE',
+    name: 'Eredivisie',
+    api_id: 88,
+    webflow_id: '6a32a9cb63396a5393212f44',
+    season: 2026
+  },
+  {
+    code: 'L1',
+    name: 'Ligue 1',
+    api_id: 61,
+    webflow_id: '6a32a9cb63396a5393212f46',
+    season: 2026
+  },
+  {
+    code: 'BSA',
+    name: 'Brasileiro Série A',
+    api_id: 71,
+    webflow_id: '6a32a9cb63396a5393212f48',
+    season: 2026
+  }
+];
 
-// ── MANUAL ALIASES (kept in sync with league-sync-v2-dryrun.js) ──────────
+const LEAGUE_BY_API_ID = new Map(
+  LEAGUES.map(league => [
+    league.api_id,
+    league
+  ])
+);
+
+const LIVE_STATUSES = new Set([
+  '1H',
+  '2H',
+  'HT',
+  'ET',
+  'BT',
+  'P',
+  'SUSP',
+  'INT',
+  'LIVE'
+]);
+
+const FINISHED_STATUSES = new Set([
+  'FT',
+  'AET',
+  'PEN'
+]);
+
+const RECENT_FINISHED_LOOKBACK_MS =
+  4 * 60 * 60 * 1000;
+
+const API_DELAY_MS = 200;
+const WEBFLOW_WRITE_DELAY_MS = 500;
+
 const MANUAL_ALIASES = {
   'atletico paranaense': 'paranaense',
   'atletico mg': 'mineiro',
   'inter': 'internazionale milano',
   'lyon': 'olympique lyonnais',
   'rennes': 'stade rennais',
-  'estac troyes': 'es troyes',
+  'estac troyes': 'es troyes'
 };
 
-// ── HELPERS ───────────────────────────────────────────────────
-function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
 
-function slugify(str) {
-  return str.toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9\s-]/g, '')
-    .trim().replace(/\s+/g, '-').replace(/-+/g, '-');
+// ============================================================
+// HELPERS
+// ============================================================
+
+function sleep(ms) {
+  return new Promise(resolve =>
+    setTimeout(resolve, ms)
+  );
 }
 
+
 function normalizeTeamName(name) {
-  var n = name
+  let value = String(name || '')
     .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/[.\-']/g, ' ')
-    .replace(/\b(fc|afc|cf|sc|ac|rc|rcd|cd|ud|sv|vfl|vfb|tsg|ssc|us|as|ss|fsv|tsv|spvgg|bsc|bv|vfr|fk|nk|sk|gnk|ca|club|de|del|la|le|el|los|las|a|do|da)\b/gi, '')
+    .replace(
+      /\b(fc|afc|cf|sc|ac|rc|rcd|cd|ud|sv|vfl|vfb|tsg|ssc|us|as|ss|fsv|tsv|spvgg|bsc|bv|vfr|fk|nk|sk|gnk|ca|club|de|del|la|le|el|los|las|a|do|da)\b/gi,
+      ''
+    )
     .replace(/[^a-z0-9\s]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-  if (MANUAL_ALIASES[n]) return MANUAL_ALIASES[n];
-  return n;
+
+  return MANUAL_ALIASES[value] || value;
 }
 
-function getMatchTokens(normalized) {
-  var all = normalized.split(' ').filter(function(x) { return x; });
-  return new Set(all.filter(function(t) { return !/^\d+$/.test(t); }));
+
+function slugify(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-');
 }
 
-function findTeamMatch(apiTeamName, webflowTeamsByNormalizedName) {
-  var normalized = normalizeTeamName(apiTeamName);
-  if (webflowTeamsByNormalizedName.has(normalized)) {
-    return { item: webflowTeamsByNormalizedName.get(normalized), method: 'exact' };
-  }
-  var apiTokens = getMatchTokens(normalized);
-  if (apiTokens.size === 0) return null;
-  var candidates = [];
-  for (var entry of webflowTeamsByNormalizedName.entries()) {
-    var wfNormalized = entry[0];
-    var item = entry[1];
-    var wfTokens = getMatchTokens(wfNormalized);
-    if (wfTokens.size === 0) continue;
-    var apiSubsetOfWf = [...apiTokens].every(function(t) { return wfTokens.has(t); });
-    var wfSubsetOfApi = [...wfTokens].every(function(t) { return apiTokens.has(t); });
-    if (apiSubsetOfWf || wfSubsetOfApi) candidates.push(item);
-  }
-  if (candidates.length === 1) return { item: candidates[0], method: 'token-subset' };
-  return null;
-}
-
-function getFormString(form) {
-  if (!form) return '';
-  return form.slice(-5);
-}
 
 function mapMatchStatus(shortStatus) {
-  var finished = ['FT', 'AET', 'PEN'];
-  var live = ['1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE'];
-  if (finished.indexOf(shortStatus) !== -1) return 'Played';
-  if (live.indexOf(shortStatus) !== -1) return 'Live';
+  if (
+    FINISHED_STATUSES.has(shortStatus)
+  ) {
+    return 'Played';
+  }
+
+  if (
+    LIVE_STATUSES.has(shortStatus)
+  ) {
+    return 'Live';
+  }
+
   return 'Upcoming';
 }
 
-// ── API-FOOTBALL ──────────────────────────────────────────────
-async function apiFetch(path) {
-  await sleep(DELAY_MS);
-  var res = await fetch('https://v3.football.api-sports.io' + path, {
-    headers: { 'x-apisports-key': API_FOOTBALL_KEY }
-  });
-  if (res.status === 429) {
-    console.warn('API-Football rate limited - waiting 30s');
+
+function formatUtcDate(ms) {
+  return new Date(ms)
+    .toISOString()
+    .slice(0, 10);
+}
+
+
+function sameValue(a, b) {
+  if (
+    a == null &&
+    b == null
+  ) {
+    return true;
+  }
+
+  return String(a) === String(b);
+}
+
+
+// ============================================================
+// API FOOTBALL
+// ============================================================
+
+async function apiFetch(
+  path,
+  retries = 3
+) {
+  await sleep(API_DELAY_MS);
+
+  const res = await fetch(
+    'https://v3.football.api-sports.io' +
+      path,
+    {
+      headers: {
+        'x-apisports-key':
+          API_FOOTBALL_KEY
+      }
+    }
+  );
+
+  if (
+    res.status === 429 &&
+    retries > 0
+  ) {
+    console.warn(
+      'API-Football rate limited — waiting 30 seconds...'
+    );
+
     await sleep(30000);
-    return apiFetch(path);
+
+    return apiFetch(
+      path,
+      retries - 1
+    );
   }
+
   if (!res.ok) {
-    var txt = await res.text();
-    throw new Error('API-Football ' + res.status + ': ' + txt);
+    throw new Error(
+      'API-Football ' +
+      res.status +
+      ': ' +
+      await res.text()
+    );
   }
-  var data = await res.json();
-  if (data.errors && Object.keys(data.errors).length > 0) {
-    console.warn('API errors:', data.errors);
+
+  const data = await res.json();
+
+  if (
+    data.errors &&
+    Object.keys(data.errors).length
+  ) {
+    throw new Error(
+      'API-Football errors: ' +
+      JSON.stringify(data.errors)
+    );
   }
+
   return data;
 }
 
-// ── WEBFLOW API ──────────────────────────────────────────────
-async function wfGetAllItems(collectionId, retries) {
-  if (retries === undefined) retries = 5;
-  var items = [];
-  var offset = 0;
-  var limit = 100;
-  while (true) {
-    var res = await fetch(
-      'https://api.webflow.com/v2/collections/' + collectionId + '/items?limit=' + limit + '&offset=' + offset,
-      { headers: { Authorization: 'Bearer ' + WEBFLOW_TOKEN, accept: 'application/json' } }
+
+// ============================================================
+// WEBFLOW REQUEST
+// ============================================================
+
+async function wfRequest(
+  url,
+  options = {},
+  retries = 4
+) {
+  const res = await fetch(
+    url,
+    options
+  );
+
+  if (
+    res.status === 429 &&
+    retries > 0
+  ) {
+    console.warn(
+      'Webflow rate limited — waiting 5 seconds...'
     );
-    if (res.status === 429) {
-      if (retries <= 0) throw new Error('Webflow GET items: gave up after repeated rate limiting');
-      await sleep(15000);
-      return wfGetAllItems(collectionId, retries - 1);
+
+    await sleep(5000);
+
+    return wfRequest(
+      url,
+      options,
+      retries - 1
+    );
+  }
+
+  if (!res.ok) {
+    throw new Error(
+      'Webflow ' +
+      res.status +
+      ': ' +
+      await res.text()
+    );
+  }
+
+  if (res.status === 204) {
+    return null;
+  }
+
+  const text = await res.text();
+
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+
+// ============================================================
+// WEBFLOW READ
+// ============================================================
+
+async function wfGetAllItems(
+  collectionId
+) {
+  const items = [];
+
+  const limit = 100;
+
+  let offset = 0;
+
+  while (true) {
+    const data = await wfRequest(
+      'https://api.webflow.com/v2/collections/' +
+        collectionId +
+        '/items?limit=' +
+        limit +
+        '&offset=' +
+        offset,
+      {
+        headers: {
+          Authorization:
+            'Bearer ' +
+            WEBFLOW_TOKEN,
+
+          accept:
+            'application/json'
+        }
+      }
+    );
+
+    items.push(
+      ...(data.items || [])
+    );
+
+    const total =
+      data.pagination
+        ? data.pagination.total
+        : items.length;
+
+    if (
+      items.length >= total
+    ) {
+      break;
     }
-    if (!res.ok) throw new Error('Webflow GET items: ' + res.status);
-    var data = await res.json();
-    items = items.concat(data.items || []);
-    if (items.length >= (data.pagination ? data.pagination.total : 0)) break;
+
     offset += limit;
   }
+
   return items;
 }
 
-async function wfCreateItem(collectionId, fieldData, retries) {
-  if (retries === undefined) retries = 3;
-  var res = await fetch('https://api.webflow.com/v2/collections/' + collectionId + '/items', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + WEBFLOW_TOKEN, 'Content-Type': 'application/json', accept: 'application/json' },
-    body: JSON.stringify({ fieldData: fieldData, isDraft: true })
-  });
-  if (res.status === 429) {
-    if (retries <= 0) throw new Error('Webflow CREATE: gave up after repeated rate limiting');
-    await sleep(15000);
-    return wfCreateItem(collectionId, fieldData, retries - 1);
-  }
-  if (!res.ok) {
-    if (retries > 0) { await sleep(2000); return wfCreateItem(collectionId, fieldData, retries - 1); }
-    throw new Error('Webflow CREATE: ' + (await res.text()));
-  }
-  return res.json();
-}
 
-async function wfUpdateItem(collectionId, itemId, fieldData, retries) {
-  if (retries === undefined) retries = 3;
-  var res = await fetch('https://api.webflow.com/v2/collections/' + collectionId + '/items/' + itemId, {
-    method: 'PATCH',
-    headers: { Authorization: 'Bearer ' + WEBFLOW_TOKEN, 'Content-Type': 'application/json', accept: 'application/json' },
-    body: JSON.stringify({ fieldData: fieldData })
-  });
-  if (res.status === 429) {
-    if (retries <= 0) throw new Error('Webflow PATCH: gave up after repeated rate limiting');
-    await sleep(15000);
-    return wfUpdateItem(collectionId, itemId, fieldData, retries - 1);
-  }
-  if (!res.ok) {
-    if (retries > 0) { await sleep(2000); return wfUpdateItem(collectionId, itemId, fieldData, retries - 1); }
-    throw new Error('Webflow PATCH: ' + (await res.text()));
-  }
-  return res.json();
-}
+async function wfGetItemBySlug(
+  collectionId,
+  slug
+) {
+  const data = await wfRequest(
+    'https://api.webflow.com/v2/collections/' +
+      collectionId +
+      '/items?limit=2&slug=' +
+      encodeURIComponent(slug),
+    {
+      headers: {
+        Authorization:
+          'Bearer ' +
+          WEBFLOW_TOKEN,
 
-async function wfPublishItems(collectionId, itemIds) {
-  if (!itemIds || itemIds.length === 0) return;
-  for (var i = 0; i < itemIds.length; i += 100) {
-    var batch = itemIds.slice(i, i + 100);
-    var res = await fetch('https://api.webflow.com/v2/collections/' + collectionId + '/items/publish', {
-      method: 'POST',
-      headers: { Authorization: 'Bearer ' + WEBFLOW_TOKEN, 'Content-Type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ itemIds: batch })
-    });
-    if (!res.ok) console.warn('Publish warning: ' + (await res.text()));
-    await sleep(WEBFLOW_WRITE_DELAY_MS);
-  }
-}
-
-// Full SITE publish - without this, item-level publishes above can sit
-// "queued to publish" indefinitely, since item publishing alone does not
-// push the compiled site out to the live domains. This is what actually
-// makes changes visible on footgoal.co / www.footgoal.co.
-var SITE_ID = '69c3c0d82fd37856ad9e297a';
-var CUSTOM_DOMAINS = ['69c4fc77a50ac7d07e84308a', '69c4fc76a50ac7d07e843018']; // footgoal.co, www.footgoal.co
-async function wfPublishSite() {
-  var res = await fetch('https://api.webflow.com/v2/sites/' + SITE_ID + '/publish', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + WEBFLOW_TOKEN, 'Content-Type': 'application/json', accept: 'application/json' },
-    body: JSON.stringify({ customDomains: CUSTOM_DOMAINS, publishToWebflowSubdomain: true })
-  });
-  if (!res.ok) {
-    console.warn('Site publish warning: ' + (await res.text()));
-  } else {
-    console.log('Site published to footgoal.co / www.footgoal.co.');
-  }
-}
-
-// ── STEP 1: THE ONE CHEAP CALL ─────────────────────────────────
-// /fixtures?live=all returns every fixture currently in progress across
-// every league your plan covers, in a single API call. This is the gate.
-async function getLiveLeagueIds() {
-  var data = await apiFetch('/fixtures?live=all');
-  var liveFixtures = data.response || [];
-  var liveLeagueIds = new Set(liveFixtures.map(function(f) { return f.league.id; }));
-  return { liveLeagueIds: liveLeagueIds, liveFixtures: liveFixtures };
-}
-
-// ── SYNC MATCHES for one league (same shape as the full-sync script) ────
-async function syncMatchesForLeague(league, teamByNormalizedName, matchByApiId) {
-  console.log('[LIVE] Syncing matches for ' + league.name);
-  var matchesData = await apiFetch('/fixtures?league=' + league.api_id + '&season=' + league.season);
-  var apiMatches = matchesData.response || [];
-  var updatedIds = [];
-  var matched = 0, created = 0, skipped = 0, failed = 0;
-  var pool = [];
-  var index = 0;
-  async function worker() {
-    while (index < apiMatches.length) {
-      var m = apiMatches[index++];
-      var homeMatch = findTeamMatch(m.teams.home.name, teamByNormalizedName);
-      var awayMatch = findTeamMatch(m.teams.away.name, teamByNormalizedName);
-      if (!homeMatch || !awayMatch) { skipped++; continue; }
-      var status = mapMatchStatus(m.fixture.status.short);
-      var roundText = m.league.round || '';
-      var roundMatch = roundText.match(/(\d+)/);
-      var matchweek = roundMatch ? parseInt(roundMatch[1], 10) : null;
-      var fieldData = {
-        name: homeMatch.item.fieldData.name + ' vs ' + awayMatch.item.fieldData.name,
-        slug: slugify(homeMatch.item.fieldData.name) + '-vs-' + slugify(awayMatch.item.fieldData.name) + '-' + m.fixture.id,
-        league: league.webflow_id,
-        'home-team': homeMatch.item.id, 'away-team': awayMatch.item.id,
-        'home-badge': homeMatch.item.fieldData.badge || null, 'away-badge': awayMatch.item.fieldData.badge || null,
-        'match-date': m.fixture.date, 'round-label': roundText,
-        matchweek: matchweek,
-        'home-score': m.goals.home, 'away-score': m.goals.away,
-        status: status, venue: m.fixture.venue && m.fixture.venue.name ? m.fixture.venue.name : '',
-        'api-fixture-id': m.fixture.id,
-      };
-      try {
-        var existingMatch = matchByApiId.get(String(m.fixture.id));
-        if (existingMatch) { matched++; await wfUpdateItem(WF.MATCHES, existingMatch.id, fieldData); updatedIds.push(existingMatch.id); }
-        else { created++; var createdItem = await wfCreateItem(WF.MATCHES, fieldData); updatedIds.push(createdItem.id); }
-      } catch (err) { failed++; console.error('Failed: ' + err.message); }
+        accept:
+          'application/json'
+      }
     }
+  );
+
+  const items =
+    data.items || [];
+
+  if (
+    items.length > 1
+  ) {
+    console.warn(
+      'Multiple Webflow items found for slug: ' +
+      slug
+    );
   }
-  for (var i = 0; i < MATCH_CONCURRENCY; i++) pool.push(worker());
-  await Promise.all(pool);
-  await wfPublishItems(WF.MATCHES, updatedIds);
-  console.log(league.name + ' [LIVE] matches: ' + matched + ' updated, ' + created + ' created, ' + skipped + ' skipped, ' + failed + ' failed');
-  return updatedIds;
+
+  return items[0] || null;
 }
 
-// ── SYNC STANDINGS for one league (only called for leagues with live action) ──
-async function syncStandingsForLeague(league, teamByNormalizedName, allStandings) {
-  console.log('[LIVE] Syncing standings for ' + league.name);
-  var standingsData = await apiFetch('/standings?league=' + league.api_id + '&season=' + league.season);
-  var table = (standingsData.response && standingsData.response[0] && standingsData.response[0].league && standingsData.response[0].league.standings && standingsData.response[0].league.standings[0]) || [];
-  if (table.length === 0) { console.log('No standings table yet for ' + league.name); return []; }
 
-  var standingIndex = new Map();
-  for (var s of allStandings) {
-    var teamRef = s.fieldData ? s.fieldData.team : null;
-    var leagueRef = s.fieldData ? s.fieldData.league : null;
-    if (teamRef && leagueRef === league.webflow_id) standingIndex.set(teamRef, s);
-  }
-  var updatedIds = [];
-  for (var entry of table) {
-    var match = findTeamMatch(entry.team.name, teamByNormalizedName);
-    if (!match) continue;
-    var wfTeam = match.item;
-    var fieldData = {
-      name: wfTeam.fieldData.name,
-      slug: normalizeTeamName(wfTeam.fieldData.name).replace(/\s+/g, '-') + '-' + league.code.toLowerCase() + '-standing',
-      team: wfTeam.id, league: league.webflow_id,
-      position: entry.rank, played: entry.all.played, won: entry.all.win,
-      drawn: entry.all.draw, lost: entry.all.lose,
-      'goals-for': entry.all.goals.for, 'goals-against': entry.all.goals.against,
-      'goal-difference': entry.goalsDiff, points: entry.points,
-      form: getFormString(entry.form),
-    };
-    var existingStanding = standingIndex.get(wfTeam.id);
-    if (existingStanding) { await wfUpdateItem(WF.STANDINGS, existingStanding.id, fieldData); updatedIds.push(existingStanding.id); }
-    else { var created = await wfCreateItem(WF.STANDINGS, fieldData); updatedIds.push(created.id); }
-  }
-  await wfPublishItems(WF.STANDINGS, updatedIds);
-  console.log(league.name + ' [LIVE] standings done: ' + updatedIds.length + ' items');
-  return updatedIds;
+// ============================================================
+// WEBFLOW WRITE
+// ============================================================
+
+async function wfUpdateItem(
+  collectionId,
+  itemId,
+  fieldData
+) {
+  return wfRequest(
+    'https://api.webflow.com/v2/collections/' +
+      collectionId +
+      '/items/' +
+      itemId,
+    {
+      method: 'PATCH',
+
+      headers: {
+        Authorization:
+          'Bearer ' +
+          WEBFLOW_TOKEN,
+
+        accept:
+          'application/json',
+
+        'content-type':
+          'application/json'
+      },
+
+      body: JSON.stringify({
+        isArchived: false,
+        isDraft: false,
+        fieldData
+      })
+    }
+  );
 }
 
-// ── MAIN ──────────────────────────────────────────────────────
-async function main() {
-  console.log('sync-live.js tick @ ' + new Date().toISOString());
 
-  var liveCheck = await getLiveLeagueIds();
-  var liveLeagues = LEAGUES.filter(function(l) { return liveCheck.liveLeagueIds.has(l.api_id); });
+async function wfCreateItem(
+  collectionId,
+  fieldData
+) {
+  return wfRequest(
+    'https://api.webflow.com/v2/collections/' +
+      collectionId +
+      '/items',
+    {
+      method: 'POST',
 
-  if (liveLeagues.length === 0) {
-    console.log('No live matches across any of the 7 leagues right now - exiting (1 API call used).');
+      headers: {
+        Authorization:
+          'Bearer ' +
+          WEBFLOW_TOKEN,
+
+        accept:
+          'application/json',
+
+        'content-type':
+          'application/json'
+      },
+
+      body: JSON.stringify({
+        isArchived: false,
+        isDraft: false,
+        fieldData
+      })
+    }
+  );
+}
+
+
+async function wfPublishItems(
+  collectionId,
+  itemIds
+) {
+  const uniqueIds =
+    [...new Set(itemIds)]
+      .filter(Boolean);
+
+  if (!uniqueIds.length) {
     return;
   }
 
-  console.log('LIVE right now: ' + liveLeagues.map(function(l) { return l.name; }).join(', '));
+  for (
+    let i = 0;
+    i < uniqueIds.length;
+    i += 100
+  ) {
+    const batch =
+      uniqueIds.slice(
+        i,
+        i + 100
+      );
 
-  var allTeams = await wfGetAllItems(WF.TEAMS);
-  var teamByNormalizedName = new Map();
-  for (var t of allTeams) {
-    if (t.fieldData && t.fieldData.name) teamByNormalizedName.set(normalizeTeamName(t.fieldData.name), t);
-  }
-  var allMatches = await wfGetAllItems(WF.MATCHES);
-  var matchByApiId = new Map();
-  for (var m0 of allMatches) {
-    var apiId = m0.fieldData ? m0.fieldData['api-fixture-id'] : null;
-    if (apiId) matchByApiId.set(String(apiId), m0);
-  }
-  var allStandings = await wfGetAllItems(WF.STANDINGS);
+    await wfRequest(
+      'https://api.webflow.com/v2/collections/' +
+        collectionId +
+        '/items/publish',
+      {
+        method: 'POST',
 
-  for (var league of liveLeagues) {
-    try {
-      await syncMatchesForLeague(league, teamByNormalizedName, matchByApiId);
-      await syncStandingsForLeague(league, teamByNormalizedName, allStandings);
-    } catch (err) {
-      console.error(league.name + ' [LIVE] failed: ' + err.message);
+        headers: {
+          Authorization:
+            'Bearer ' +
+            WEBFLOW_TOKEN,
+
+          accept:
+            'application/json',
+
+          'content-type':
+            'application/json'
+        },
+
+        body: JSON.stringify({
+          itemIds: batch
+        })
+      }
+    );
+
+    await sleep(
+      WEBFLOW_WRITE_DELAY_MS
+    );
+  }
+}
+
+
+async function wfPublishSite() {
+  await wfRequest(
+    'https://api.webflow.com/v2/sites/' +
+      SITE_ID +
+      '/publish',
+    {
+      method: 'POST',
+
+      headers: {
+        Authorization:
+          'Bearer ' +
+          WEBFLOW_TOKEN,
+
+        accept:
+          'application/json',
+
+        'content-type':
+          'application/json'
+      },
+
+      body: JSON.stringify({
+        customDomains:
+          CUSTOM_DOMAINS,
+
+        publishToWebflowSubdomain:
+          true
+      })
+    }
+  );
+
+  console.log(
+    'Site published to footgoal.co / www.footgoal.co.'
+  );
+}
+
+
+// ============================================================
+// TEAM LOOKUP
+// ============================================================
+
+function buildTeamLookup(
+  allTeams
+) {
+  const byApiId =
+    new Map();
+
+  const byName =
+    new Map();
+
+  for (
+    const team
+    of allTeams
+  ) {
+    const fieldData =
+      team.fieldData || {};
+
+    const apiId =
+      fieldData['api-team-id'];
+
+    const name =
+      fieldData.name;
+
+    if (
+      apiId != null &&
+      apiId !== ''
+    ) {
+      byApiId.set(
+        String(apiId),
+        team
+      );
+    }
+
+    if (name) {
+      const normalized =
+        normalizeTeamName(name);
+
+      if (
+        !byName.has(normalized)
+      ) {
+        byName.set(
+          normalized,
+          []
+        );
+      }
+
+      byName
+        .get(normalized)
+        .push(team);
     }
   }
 
-  await wfPublishSite();
-  console.log('sync-live.js tick complete.');
+  return {
+    byApiId,
+    byName
+  };
 }
 
-main().catch(function(err) { console.error('Fatal error: ' + err.message); process.exit(1); });
+
+function resolveTeam(
+  apiTeam,
+  teamLookup
+) {
+  if (!apiTeam) {
+    return null;
+  }
+
+  const byId =
+    teamLookup
+      .byApiId
+      .get(
+        String(apiTeam.id)
+      );
+
+  if (byId) {
+    return byId;
+  }
+
+  const normalized =
+    normalizeTeamName(
+      apiTeam.name
+    );
+
+  const exact =
+    teamLookup
+      .byName
+      .get(normalized) || [];
+
+  if (
+    exact.length === 1
+  ) {
+    return exact[0];
+  }
+
+  return null;
+}
+
+
+// ============================================================
+// LIVE / RECENT FIXTURES
+// ============================================================
+
+async function getLiveTargetFixtures() {
+  const data =
+    await apiFetch(
+      '/fixtures?live=all'
+    );
+
+  const fixtures =
+    data.response || [];
+
+  return fixtures.filter(
+    fixture =>
+      LEAGUE_BY_API_ID.has(
+        fixture.league.id
+      ) &&
+      LIVE_STATUSES.has(
+        fixture.fixture.status.short
+      )
+  );
+}
+
+
+async function getRecentFinishedTargetFixtures(
+  nowMs
+) {
+  const fromMs =
+    nowMs -
+    RECENT_FINISHED_LOOKBACK_MS;
+
+  const dates =
+    [...new Set([
+      formatUtcDate(nowMs),
+      formatUtcDate(fromMs)
+    ])];
+
+  const byFixtureId =
+    new Map();
+
+  for (
+    const date
+    of dates
+  ) {
+    const data =
+      await apiFetch(
+        '/fixtures?date=' +
+        date +
+        '&timezone=UTC'
+      );
+
+    for (
+      const fixture
+      of data.response || []
+    ) {
+      if (
+        !LEAGUE_BY_API_ID.has(
+          fixture.league.id
+        )
+      ) {
+        continue;
+      }
+
+      if (
+        !FINISHED_STATUSES.has(
+          fixture.fixture.status.short
+        )
+      ) {
+        continue;
+      }
+
+      const kickoffMs =
+        Number(
+          fixture.fixture.timestamp
+        ) * 1000;
+
+      if (
+        Number.isFinite(kickoffMs) &&
+        kickoffMs >= fromMs &&
+        kickoffMs <= nowMs
+      ) {
+        byFixtureId.set(
+          String(
+            fixture.fixture.id
+          ),
+          fixture
+        );
+      }
+    }
+  }
+
+  return [
+    ...byFixtureId.values()
+  ];
+}
+
+
+// ============================================================
+// MATCH FIELD DATA
+// ============================================================
+
+function buildMatchSlug(
+  apiFixture,
+  homeTeam,
+  awayTeam
+) {
+  return (
+    slugify(
+      homeTeam.fieldData.name
+    ) +
+    '-vs-' +
+    slugify(
+      awayTeam.fieldData.name
+    ) +
+    '-' +
+    apiFixture.fixture.id
+  );
+}
+
+
+function buildMatchFieldData(
+  apiFixture,
+  league,
+  homeTeam,
+  awayTeam
+) {
+  const roundText =
+    apiFixture.league.round || '';
+
+  const roundMatch =
+    roundText.match(
+      /(\d+)/
+    );
+
+  const matchweek =
+    roundMatch
+      ? parseInt(
+          roundMatch[1],
+          10
+        )
+      : null;
+
+  return {
+    name:
+      homeTeam.fieldData.name +
+      ' vs ' +
+      awayTeam.fieldData.name,
+
+    slug:
+      buildMatchSlug(
+        apiFixture,
+        homeTeam,
+        awayTeam
+      ),
+
+    league:
+      league.webflow_id,
+
+    'home-team':
+      homeTeam.id,
+
+    'away-team':
+      awayTeam.id,
+
+    'home-badge':
+      homeTeam.fieldData.badge ||
+      null,
+
+    'away-badge':
+      awayTeam.fieldData.badge ||
+      null,
+
+    'match-date':
+      apiFixture.fixture.date,
+
+    'round-label':
+      roundText,
+
+    matchweek,
+
+    'home-score':
+      apiFixture.goals.home,
+
+    'away-score':
+      apiFixture.goals.away,
+
+    status:
+      mapMatchStatus(
+        apiFixture.fixture.status.short
+      ),
+
+    venue:
+      apiFixture.fixture.venue &&
+      apiFixture.fixture.venue.name
+        ? apiFixture.fixture.venue.name
+        : '',
+
+    'api-fixture-id':
+      apiFixture.fixture.id
+  };
+}
+
+
+function matchNeedsLiveUpdate(
+  existingItem,
+  newFieldData
+) {
+  const old =
+    existingItem.fieldData || {};
+
+  return (
+    !sameValue(
+      old['home-score'],
+      newFieldData['home-score']
+    ) ||
+    !sameValue(
+      old['away-score'],
+      newFieldData['away-score']
+    ) ||
+    !sameValue(
+      old.status,
+      newFieldData.status
+    )
+  );
+}
+
+
+// ============================================================
+// MATCH SYNC
+// ============================================================
+
+async function syncRelevantMatches(
+  fixtures,
+  teamLookup
+) {
+  const publishIds = [];
+
+  const newlyFinishedLeagueIds =
+    new Set();
+
+  let updated = 0;
+  let unchanged = 0;
+  let missing = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (
+    const fixture
+    of fixtures
+  ) {
+    const league =
+      LEAGUE_BY_API_ID.get(
+        fixture.league.id
+      );
+
+    if (!league) {
+      continue;
+    }
+
+    const homeTeam =
+      resolveTeam(
+        fixture.teams.home,
+        teamLookup
+      );
+
+    const awayTeam =
+      resolveTeam(
+        fixture.teams.away,
+        teamLookup
+      );
+
+    if (
+      !homeTeam ||
+      !awayTeam
+    ) {
+      skipped++;
+
+      console.warn(
+        'TEAM MATCH FAILED: ' +
+        fixture.teams.home.name +
+        ' vs ' +
+        fixture.teams.away.name
+      );
+
+      continue;
+    }
+
+    const fieldData =
+      buildMatchFieldData(
+        fixture,
+        league,
+        homeTeam,
+        awayTeam
+      );
+
+    const existing =
+      await wfGetItemBySlug(
+        WF.MATCHES,
+        fieldData.slug
+      );
+
+    if (!existing) {
+      missing++;
+
+      console.warn(
+        'MATCH NOT FOUND IN WEBFLOW: ' +
+        fieldData.name +
+        ' | fixture ' +
+        fixture.fixture.id +
+        ' — skipping safely; Full League Sync can repair it.'
+      );
+
+      continue;
+    }
+
+    const oldStatus =
+      existing.fieldData
+        ? existing.fieldData.status
+        : null;
+
+    const needsUpdate =
+      matchNeedsLiveUpdate(
+        existing,
+        fieldData
+      );
+
+    if (!needsUpdate) {
+      unchanged++;
+      continue;
+    }
+
+    try {
+      await wfUpdateItem(
+        WF.MATCHES,
+        existing.id,
+        fieldData
+      );
+
+      publishIds.push(
+        existing.id
+      );
+
+      updated++;
+
+      if (
+        fieldData.status ===
+          'Played' &&
+        oldStatus !==
+          'Played'
+      ) {
+        newlyFinishedLeagueIds.add(
+          league.api_id
+        );
+      }
+
+      console.log(
+        '[' +
+        fieldData.status.toUpperCase() +
+        '] ' +
+        homeTeam.fieldData.name +
+        ' ' +
+        fixture.goals.home +
+        '-' +
+        fixture.goals.away +
+        ' ' +
+        awayTeam.fieldData.name
+      );
+    } catch (err) {
+      failed++;
+
+      console.error(
+        'MATCH WRITE FAILED ' +
+        fixture.fixture.id +
+        ': ' +
+        err.message
+      );
+    }
+  }
+
+  await wfPublishItems(
+    WF.MATCHES,
+    publishIds
+  );
+
+  console.log(
+    'Matches: ' +
+    updated +
+    ' updated, ' +
+    unchanged +
+    ' unchanged, ' +
+    missing +
+    ' missing, ' +
+    skipped +
+    ' team-skipped, ' +
+    failed +
+    ' failed'
+  );
+
+  return {
+    changed:
+      publishIds.length,
+
+    failed,
+
+    newlyFinishedLeagueIds
+  };
+}
+
+
+// ============================================================
+// STANDINGS
+// ============================================================
+
+function buildStandingIndex(
+  allStandings,
+  leagueWebflowId
+) {
+  const index =
+    new Map();
+
+  for (
+    const item
+    of allStandings
+  ) {
+    const fieldData =
+      item.fieldData || {};
+
+    if (
+      fieldData.team &&
+      fieldData.league ===
+        leagueWebflowId
+    ) {
+      index.set(
+        fieldData.team,
+        item
+      );
+    }
+  }
+
+  return index;
+}
+
+
+async function syncStandingsForLeague(
+  league,
+  teamLookup,
+  allStandings
+) {
+  console.log(
+    '[FINAL] Syncing standings for ' +
+    league.name
+  );
+
+  const data =
+    await apiFetch(
+      '/standings?league=' +
+      league.api_id +
+      '&season=' +
+      league.season
+    );
+
+  const table =
+    data.response &&
+    data.response[0] &&
+    data.response[0].league &&
+    data.response[0].league.standings &&
+    data.response[0].league.standings[0]
+      ? data.response[0]
+          .league
+          .standings[0]
+      : [];
+
+  if (!table.length) {
+    console.log(
+      'No standings table yet for ' +
+      league.name
+    );
+
+    return 0;
+  }
+
+  const standingIndex =
+    buildStandingIndex(
+      allStandings,
+      league.webflow_id
+    );
+
+  const publishIds = [];
+
+  for (
+    const entry
+    of table
+  ) {
+    const team =
+      resolveTeam(
+        entry.team,
+        teamLookup
+      );
+
+    if (!team) {
+      console.warn(
+        'STANDING TEAM MATCH FAILED: ' +
+        entry.team.name
+      );
+
+      continue;
+    }
+
+    const fieldData = {
+      name:
+        team.fieldData.name,
+
+      slug:
+        normalizeTeamName(
+          team.fieldData.name
+        )
+          .replace(
+            /\s+/g,
+            '-'
+          ) +
+        '-' +
+        league.code.toLowerCase() +
+        '-standing',
+
+      team:
+        team.id,
+
+      league:
+        league.webflow_id,
+
+      position:
+        entry.rank,
+
+      played:
+        entry.all.played,
+
+      won:
+        entry.all.win,
+
+      drawn:
+        entry.all.draw,
+
+      lost:
+        entry.all.lose,
+
+      'goals-for':
+        entry.all.goals.for,
+
+      'goals-against':
+        entry.all.goals.against,
+
+      'goal-difference':
+        entry.goalsDiff,
+
+      points:
+        entry.points,
+
+      form:
+        entry.form
+          ? entry.form.slice(-5)
+          : ''
+    };
+
+    const existing =
+      standingIndex.get(
+        team.id
+      );
+
+    if (existing) {
+      await wfUpdateItem(
+        WF.STANDINGS,
+        existing.id,
+        fieldData
+      );
+
+      publishIds.push(
+        existing.id
+      );
+    } else {
+      const created =
+        await wfCreateItem(
+          WF.STANDINGS,
+          fieldData
+        );
+
+      if (
+        created &&
+        created.id
+      ) {
+        publishIds.push(
+          created.id
+        );
+      }
+    }
+  }
+
+  await wfPublishItems(
+    WF.STANDINGS,
+    publishIds
+  );
+
+  console.log(
+    league.name +
+    ' standings: ' +
+    publishIds.length +
+    ' item(s) published'
+  );
+
+  return publishIds.length;
+}
+
+
+// ============================================================
+// MAIN
+// ============================================================
+
+async function main() {
+  if (
+    !WEBFLOW_TOKEN ||
+    !API_FOOTBALL_KEY
+  ) {
+    throw new Error(
+      'Missing WEBFLOW_TOKEN or API_FOOTBALL_KEY'
+    );
+  }
+
+  const now =
+    new Date();
+
+  const nowMs =
+    now.getTime();
+
+  console.log(
+    'sync-live.js tick @ ' +
+    now.toISOString()
+  );
+
+  const liveFixtures =
+    await getLiveTargetFixtures();
+
+  console.log(
+    'Target live fixtures right now: ' +
+    liveFixtures.length
+  );
+
+  let recentFinishedFixtures = [];
+
+  if (
+    now.getUTCMinutes() %
+      5 ===
+    0
+  ) {
+    console.log(
+      '5-minute final-score check...'
+    );
+
+    recentFinishedFixtures =
+      await getRecentFinishedTargetFixtures(
+        nowMs
+      );
+
+    console.log(
+      'Recently finished target fixtures: ' +
+      recentFinishedFixtures.length
+    );
+  }
+
+  const relevantByFixtureId =
+    new Map();
+
+  for (
+    const fixture
+    of liveFixtures
+  ) {
+    relevantByFixtureId.set(
+      String(
+        fixture.fixture.id
+      ),
+      fixture
+    );
+  }
+
+  for (
+    const fixture
+    of recentFinishedFixtures
+  ) {
+    relevantByFixtureId.set(
+      String(
+        fixture.fixture.id
+      ),
+      fixture
+    );
+  }
+
+  const relevantFixtures =
+    [
+      ...relevantByFixtureId.values()
+    ];
+
+  if (
+    !relevantFixtures.length
+  ) {
+    console.log(
+      'No relevant live/recently-finished matches — exiting without Webflow calls.'
+    );
+
+    return;
+  }
+
+  console.log(
+    'Relevant fixtures to inspect: ' +
+    relevantFixtures.length
+  );
+
+  const allTeams =
+    await wfGetAllItems(
+      WF.TEAMS
+    );
+
+  const teamLookup =
+    buildTeamLookup(
+      allTeams
+    );
+
+  const matchResult =
+    await syncRelevantMatches(
+      relevantFixtures,
+      teamLookup
+    );
+
+  let standingChanges = 0;
+
+  if (
+    matchResult
+      .newlyFinishedLeagueIds
+      .size
+  ) {
+    const allStandings =
+      await wfGetAllItems(
+        WF.STANDINGS
+      );
+
+    for (
+      const leagueId
+      of matchResult
+        .newlyFinishedLeagueIds
+    ) {
+      const league =
+        LEAGUE_BY_API_ID.get(
+          leagueId
+        );
+
+      if (!league) {
+        continue;
+      }
+
+      try {
+        standingChanges +=
+          await syncStandingsForLeague(
+            league,
+            teamLookup,
+            allStandings
+          );
+      } catch (err) {
+        console.error(
+          league.name +
+          ' standings failed: ' +
+          err.message
+        );
+      }
+    }
+  }
+
+  if (
+    matchResult.changed > 0 ||
+    standingChanges > 0
+  ) {
+    await wfPublishSite();
+  } else {
+    console.log(
+      'No Webflow changes detected — site publish skipped.'
+    );
+  }
+
+  console.log(
+    'sync-live.js tick complete.'
+  );
+}
+
+
+// ============================================================
+// START
+// ============================================================
+
+main().catch(err => {
+  console.error(
+    'Fatal error: ' +
+    err.message
+  );
+
+  process.exit(1);
+});
