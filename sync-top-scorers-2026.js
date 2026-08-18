@@ -197,9 +197,6 @@ function getPreferredPlayerName(player, existingItem = null) {
       ).trim()
     : '';
 
-  // If API only gives something like "A. Ueda"
-  // but existing CMS already has "Ayase Ueda",
-  // keep the better full existing name.
   if (
     existingName &&
     apiName &&
@@ -448,6 +445,7 @@ async function wfUpdateItem(
 
       body: JSON.stringify({
         isArchived: false,
+        isDraft: false,
         fieldData
       })
     }
@@ -479,6 +477,7 @@ async function wfCreateItem(
 
       body: JSON.stringify({
         isArchived: false,
+        isDraft: false,
         fieldData
       })
     }
@@ -739,9 +738,6 @@ function buildExistingLookup(items) {
       );
 
 
-    // IMPORTANT:
-    // Array, not a single item.
-    // This allows us to safely detect old duplicate IDs.
     if (apiId) {
       const key =
         String(apiId);
@@ -1001,8 +997,6 @@ function buildCurrentFieldData({
   };
 
 
-  // Do not clear a good existing image
-  // if API unexpectedly has no image.
   const photoUrl =
     player.photo ||
     (
@@ -1110,10 +1104,6 @@ async function main() {
     );
 
 
-  // ==========================================================
-  // GLOBAL SUMMARY
-  // ==========================================================
-
   let totalUpdated = 0;
   let totalCreated = 0;
   let totalRelinked = 0;
@@ -1121,10 +1111,6 @@ async function main() {
   let totalRepublished = 0;
   let totalErrors = 0;
 
-
-  // ==========================================================
-  // EACH LEAGUE
-  // ==========================================================
 
   for (
     const league
@@ -1167,10 +1153,6 @@ async function main() {
         leagueItems
       );
 
-
-    // --------------------------------------------------------
-    // FETCH CURRENT API DATA
-    // --------------------------------------------------------
 
     console.log(
       'Fetching current API Top Scorers...'
@@ -1221,10 +1203,6 @@ async function main() {
       currentTop.length
     );
 
-
-    // ========================================================
-    // NO CURRENT SCORER DATA
-    // ========================================================
 
     if (
       currentTop.length === 0
@@ -1287,10 +1265,6 @@ async function main() {
     }
 
 
-    // ========================================================
-    // CURRENT TOP N EXISTS
-    // ========================================================
-
     const matchedCmsIds =
       new Set();
 
@@ -1298,10 +1272,6 @@ async function main() {
 
     let leagueHadError = false;
 
-
-    // --------------------------------------------------------
-    // EACH CURRENT PLAYER
-    // --------------------------------------------------------
 
     for (
       let index = 0;
@@ -1348,10 +1318,6 @@ async function main() {
       );
 
 
-      // ------------------------------------------------------
-      // TEAM RESOLUTION
-      // ------------------------------------------------------
-
       const teamMatch =
         resolveTeam(
           stats.team || null,
@@ -1378,10 +1344,6 @@ async function main() {
       }
 
 
-      // ------------------------------------------------------
-      // 1. MATCH BY API PLAYER ID
-      // ------------------------------------------------------
-
       const idCandidates =
         existingLookup
           .byApiPlayerId
@@ -1404,10 +1366,6 @@ async function main() {
           ? 'api-player-id'
           : null;
 
-
-      // ------------------------------------------------------
-      // 2. EXACT FULL NAME FALLBACK
-      // ------------------------------------------------------
 
       if (!existingItem) {
         const exactCandidates =
@@ -1442,10 +1400,6 @@ async function main() {
         }
       }
 
-
-      // ------------------------------------------------------
-      // UPDATE EXISTING
-      // ------------------------------------------------------
 
       if (existingItem) {
         matchedCmsIds.add(
@@ -1539,10 +1493,6 @@ async function main() {
         continue;
       }
 
-
-      // ------------------------------------------------------
-      // CREATE NEW
-      // ------------------------------------------------------
 
       const fieldData =
         buildCurrentFieldData({
@@ -1638,10 +1588,6 @@ async function main() {
     }
 
 
-    // ========================================================
-    // PUBLISH CURRENT ITEMS
-    // ========================================================
-
     if (publishIds.length) {
       console.log(
         '\nPublishing ' +
@@ -1676,11 +1622,6 @@ async function main() {
     }
 
 
-    // ========================================================
-    // SAFETY:
-    // DON'T UNPUBLISH STALE ITEMS IF CURRENT SYNC HAD ERRORS
-    // ========================================================
-
     if (leagueHadError) {
       console.warn(
         '\nLeague had one or more errors.'
@@ -1693,10 +1634,6 @@ async function main() {
       continue;
     }
 
-
-    // ========================================================
-    // STALE ITEMS
-    // ========================================================
 
     const staleItems =
       leagueItems.filter(
@@ -1778,10 +1715,6 @@ async function main() {
     }
   }
 
-
-  // ==========================================================
-  // FINAL SUMMARY
-  // ==========================================================
 
   console.log(
     '\n\n============================================================'
