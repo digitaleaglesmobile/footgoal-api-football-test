@@ -2,6 +2,12 @@ name: Full League Sync
 
 on:
   workflow_dispatch: {}
+  schedule:
+    - cron: '20 */6 * * *'
+
+concurrency:
+  group: full-league-sync
+  cancel-in-progress: false
 
 jobs:
   sync:
@@ -27,6 +33,12 @@ jobs:
 
       - name: Sync league metadata
         run: node sync-league-metadata.js
+        env:
+          WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+
+      - name: Sync current season team form
+        run: node sync-team-form.js
         env:
           WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
