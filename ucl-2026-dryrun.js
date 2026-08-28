@@ -33,7 +33,11 @@ async function apiFetch(path, retries = 3) {
   if (res.status === 429 && retries > 0) {
     console.warn('Rate limited — waiting 30 seconds...');
     await sleep(30000);
-    return apiFetch(path, retries - 1);
+
+    return apiFetch(
+      path,
+      retries - 1
+    );
   }
 
   if (!res.ok) {
@@ -203,7 +207,10 @@ async function main() {
   }
 
   // ----------------------------------------------------------
-  // LEAGUE STAGE FIXTURES
+  // LEAGUE STAGE / GROUP STAGE FIXTURES
+  //
+  // API-Football currently labels the new 36-team
+  // Champions League League Phase as "Group Stage".
   // ----------------------------------------------------------
 
   const leagueStageFixtures =
@@ -211,7 +218,7 @@ async function main() {
       const round =
         match.league?.round || '';
 
-      return /league\s*(stage|phase)/i.test(
+      return /(?:league\s*(stage|phase)|group\s*stage)/i.test(
         round
       );
     });
@@ -227,7 +234,7 @@ async function main() {
     );
 
   console.log(
-    '\nLeague Stage fixtures found: ' +
+    '\nLeague Stage / Group Stage fixtures found: ' +
     leagueStageFixtures.length
   );
 
@@ -255,7 +262,7 @@ async function main() {
 
   else if (fixtureTeams.length === 36) {
     finalTeams = fixtureTeams;
-    source = 'League Stage fixtures';
+    source = 'League Stage / Group Stage fixtures';
   }
 
   if (finalTeams.length !== 36) {
