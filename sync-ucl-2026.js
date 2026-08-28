@@ -10,6 +10,8 @@
 // - Creates missing Team items only when necessary
 // - Rebuilds current UCL standings safely
 // - Syncs ONLY the 144 League Phase fixtures
+// - Keeps placeholder fixtures unpublished until the
+//   real 8-matchweek schedule is available
 // - Unpublishes stale old-season UCL standings/matches
 // - Updates UCL league metadata
 //
@@ -1521,6 +1523,60 @@ async function syncStandings(
 }
 
 // ============================================================
+// FIXTURE SAFETY
+// ============================================================
+
+async function unpublishUclFixturesUntilScheduleReady() {
+  console.log(
+    '\n=== FIXTURES SAFETY ==='
+  );
+
+  const allMatches =
+    await wfGetAllItems(
+      WF.MATCHES
+    );
+
+  const liveUclMatches =
+    allMatches.filter(
+      item =>
+        getField(
+          item,
+          'league'
+        ) ===
+          UCL.webflow_id &&
+        !item.isDraft
+    );
+
+  const ids =
+    liveUclMatches.map(
+      item => item.id
+    );
+
+  if (!ids.length) {
+    console.log(
+      'No live UCL fixtures to unpublish.'
+    );
+
+    return;
+  }
+
+  console.log(
+    'Schedule is not finalized — unpublishing ' +
+      ids.length +
+      ' UCL fixtures.'
+  );
+
+  await wfUnpublishItems(
+    WF.MATCHES,
+    ids
+  );
+
+  console.log(
+    'Placeholder UCL fixtures removed from live site.'
+  );
+}
+
+// ============================================================
 // MATCHES
 // ============================================================
 
@@ -2203,7 +2259,7 @@ async function main() {
     console.warn(
       'WARNING: expected 8 matchweek date clusters, got ' +
         matchweekInfo.count +
-        '. Fixtures will still sync; inspect dates after UEFA finalizes the schedule.'
+        '. Placeholder fixtures will remain unpublished until the schedule is finalized.'
     );
   }
 
@@ -2234,11 +2290,31 @@ async function main() {
     standingsData
   );
 
-  await syncMatches(
-    leagueFixtures,
-    teamLookup,
-    matchweekInfo
-  );
+  if (
+    matchweekInfo.count === 8
+  ) {
+    console.log(
+      '\nFinal UCL schedule detected: 8 matchweeks.'
+    );
+
+    await syncMatches(
+      leagueFixtures,
+      teamLookup,
+      matchweekInfo
+    );
+  } else {
+    console.log(
+      '\nUCL schedule is not finalized yet.'
+    );
+
+    console.log(
+      'Detected matchweek clusters: ' +
+        matchweekInfo.count +
+        ' / 8'
+    );
+
+    await unpublishUclFixturesUntilScheduleReady();
+  }
 
   await syncLeagueMetadata(
     leagueFixtures,
