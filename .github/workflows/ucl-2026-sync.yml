@@ -1,0 +1,29 @@
+name: UCL 2026 Production Sync
+
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: ucl-2026-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Sync UCL 2026 League Phase
+        run: node sync-ucl-2026.js
+        env:
+          WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          CONFIRM: 'yes'
