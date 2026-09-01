@@ -9,6 +9,7 @@
 //   their domestic league
 // - Creates missing Team items only when necessary
 // - Rebuilds current UCL standings safely
+// - Calculates FORM only from finished UCL League Phase matches
 // - Syncs ONLY the 144 League Phase fixtures
 // - Keeps placeholder fixtures unpublished until the
 //   real 8-matchweek schedule is available
@@ -1177,6 +1178,138 @@ async function syncTeams(
 }
 
 // ============================================================
+// UCL LEAGUE PHASE FORM
+// ============================================================
+
+function buildLeaguePhaseFormMap(
+  fixtures
+) {
+  const formMap =
+    new Map();
+
+  const finishedFixtures =
+    fixtures
+      .filter(
+        fixture =>
+          FINISHED_STATUSES.has(
+            fixture.fixture
+              ?.status
+              ?.short
+          )
+      )
+      .sort(
+        (a, b) =>
+          new Date(
+            a.fixture.date
+          ) -
+          new Date(
+            b.fixture.date
+          )
+      );
+
+  function addResult(
+    teamId,
+    result
+  ) {
+    const key =
+      String(teamId);
+
+    const current =
+      formMap.get(key) ||
+      [];
+
+    current.push(
+      result
+    );
+
+    formMap.set(
+      key,
+      current.slice(-5)
+    );
+  }
+
+  for (
+    const fixture
+    of finishedFixtures
+  ) {
+    const homeId =
+      fixture.teams
+        ?.home
+        ?.id;
+
+    const awayId =
+      fixture.teams
+        ?.away
+        ?.id;
+
+    const homeGoals =
+      Number(
+        fixture.goals
+          ?.home
+      );
+
+    const awayGoals =
+      Number(
+        fixture.goals
+          ?.away
+      );
+
+    if (
+      !homeId ||
+      !awayId ||
+      !Number.isFinite(
+        homeGoals
+      ) ||
+      !Number.isFinite(
+        awayGoals
+      )
+    ) {
+      continue;
+    }
+
+    if (
+      homeGoals >
+      awayGoals
+    ) {
+      addResult(
+        homeId,
+        'W'
+      );
+
+      addResult(
+        awayId,
+        'L'
+      );
+    } else if (
+      homeGoals <
+      awayGoals
+    ) {
+      addResult(
+        homeId,
+        'L'
+      );
+
+      addResult(
+        awayId,
+        'W'
+      );
+    } else {
+      addResult(
+        homeId,
+        'D'
+      );
+
+      addResult(
+        awayId,
+        'D'
+      );
+    }
+  }
+
+  return formMap;
+}
+
+// ============================================================
 // STANDINGS
 // ============================================================
 
@@ -1211,10 +1344,29 @@ function getApiStandingsTable(
 async function syncStandings(
   finalTeams,
   teamLookup,
-  standingsData
+  standingsData,
+  leagueFixtures
 ) {
   console.log(
     '\n=== STANDINGS ==='
+  );
+
+  const leaguePhaseFormMap =
+    buildLeaguePhaseFormMap(
+      leagueFixtures
+    );
+
+  console.log(
+    'UCL League Phase form calculated from ' +
+      leagueFixtures.filter(
+        fixture =>
+          FINISHED_STATUSES.has(
+            fixture.fixture
+              ?.status
+              ?.short
+          )
+      ).length +
+      ' finished League Phase fixtures.'
   );
 
   const allStandings =
@@ -1359,6 +1511,15 @@ async function syncStandings(
       const goals =
         all.goals || {};
 
+      const uclForm =
+        (
+          leaguePhaseFormMap.get(
+            String(
+              entry.team.id
+            )
+          ) || []
+        ).join('');
+
       const fieldData = {
         name:
           getField(
@@ -1427,12 +1588,13 @@ async function syncStandings(
             entry.points || 0
           ),
 
+        // IMPORTANT:
+        // Never use entry.form here.
+        // API-Football can include qualifying/domestic form.
+        // This value is calculated ONLY from finished UCL
+        // League Phase fixtures.
         form:
-          entry.form
-            ? String(
-                entry.form
-              ).slice(-5)
-            : ''
+          uclForm
       };
 
       const existing =
@@ -2287,7 +2449,8 @@ async function main() {
   await syncStandings(
     finalTeams,
     teamLookup,
-    standingsData
+    standingsData,
+    leagueFixtures
   );
 
   if (
