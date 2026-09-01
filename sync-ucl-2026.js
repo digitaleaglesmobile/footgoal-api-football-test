@@ -2,24 +2,14 @@
 // sync-ucl-2026.js — footgoal.co
 // SAFE production sync for UEFA Champions League 2026/27
 //
-// Scope:
-// - ONLY the 36-team League Phase
-//   (API-Football labels it "Group Stage")
-// - Reuses existing Webflow Team items without changing
-//   their domestic league
-// - Creates missing Team items only when necessary
-// - Rebuilds current UCL standings safely
-// - Calculates FORM only from finished UCL League Phase matches
-// - Syncs ONLY the 144 League Phase fixtures
-// - Keeps placeholder fixtures unpublished until the
-//   real 8-matchweek schedule is available
-// - Unpublishes stale old-season UCL standings/matches
-// - Updates UCL league metadata
-//
-// Does NOT sync UCL top scorers yet, because API-Football's
-// competition-level scorer endpoint can include qualifying stats.
-//
-// Nothing is written unless CONFIRM=yes.
+// Key safety rules:
+// - ONLY the 36-team League Phase ("Group Stage" in API-Football)
+// - Existing domestic Team items are reused without changing league
+// - FORM is calculated ONLY from finished UCL League Phase fixtures
+// - Placeholder fixtures stay unpublished until 8 matchweeks exist
+// - Unchanged Webflow items are NOT rewritten
+// - Webflow requests are throttled and 429s use Retry-After/backoff
+// - Nothing is written unless CONFIRM=yes
 // ============================================================
 
 const WEBFLOW_TOKEN = process.env.WEBFLOW_TOKEN;
@@ -44,11 +34,15 @@ const UCL = {
 
 const EXPECTED_TEAMS = 36;
 const EXPECTED_FIXTURES = 144;
-
-const WRITE_CONCURRENCY = 4;
+const EXPECTED_MATCHWEEKS = 8;
 
 const MATCHDAY_GAP_MS =
   4 * 24 * 60 * 60 * 1000;
+
+// Conservative throttle because sync-live.js can also
+// be talking to Webflow at the same time.
+const WEBFLOW_REQUEST_GAP_MS = 1100;
+const WEBFLOW_MAX_RETRIES = 8;
 
 const LIVE_STATUSES = new Set([
   '1H',
@@ -72,48 +66,6 @@ function sleep(ms) {
   return new Promise(resolve =>
     setTimeout(resolve, ms)
   );
-}
-
-async function pMap(
-  items,
-  mapper,
-  concurrency = WRITE_CONCURRENCY
-) {
-  const results =
-    new Array(items.length);
-
-  let index = 0;
-
-  async function worker() {
-    while (index < items.length) {
-      const current = index++;
-
-      results[current] =
-        await mapper(
-          items[current],
-          current
-        );
-    }
-  }
-
-  const workers = [];
-
-  for (
-    let i = 0;
-    i < Math.min(
-      concurrency,
-      items.length
-    );
-    i++
-  ) {
-    workers.push(
-      worker()
-    );
-  }
-
-  await Promise.all(workers);
-
-  return results;
 }
 
 function normalizeName(value) {
@@ -157,10 +109,12 @@ function getField(
   item,
   slug
 ) {
-  return item &&
+  return (
+    item &&
     item.fieldData
-    ? item.fieldData[slug]
-    : null;
+      ? item.fieldData[slug]
+      : null
+  );
 }
 
 function isLeaguePhaseRound(
@@ -344,6 +298,138 @@ function inferMatchweeks(
 }
 
 // ============================================================
+// UCL LEAGUE PHASE FORM
+// ============================================================
+
+function buildLeaguePhaseFormMap(
+  fixtures
+) {
+  const formMap =
+    new Map();
+
+  const finishedFixtures =
+    fixtures
+      .filter(
+        fixture =>
+          FINISHED_STATUSES.has(
+            fixture.fixture
+              ?.status
+              ?.short
+          )
+      )
+      .sort(
+        (a, b) =>
+          new Date(
+            a.fixture.date
+          ).getTime() -
+          new Date(
+            b.fixture.date
+          ).getTime()
+      );
+
+  function addResult(
+    teamId,
+    result
+  ) {
+    const key =
+      String(teamId);
+
+    const current =
+      formMap.get(key) ||
+      [];
+
+    current.push(
+      result
+    );
+
+    formMap.set(
+      key,
+      current.slice(-5)
+    );
+  }
+
+  for (
+    const fixture
+    of finishedFixtures
+  ) {
+    const homeId =
+      fixture.teams
+        ?.home
+        ?.id;
+
+    const awayId =
+      fixture.teams
+        ?.away
+        ?.id;
+
+    const homeGoals =
+      Number(
+        fixture.goals
+          ?.home
+      );
+
+    const awayGoals =
+      Number(
+        fixture.goals
+          ?.away
+      );
+
+    if (
+      !homeId ||
+      !awayId ||
+      !Number.isFinite(
+        homeGoals
+      ) ||
+      !Number.isFinite(
+        awayGoals
+      )
+    ) {
+      continue;
+    }
+
+    if (
+      homeGoals >
+      awayGoals
+    ) {
+      addResult(
+        homeId,
+        'W'
+      );
+
+      addResult(
+        awayId,
+        'L'
+      );
+    } else if (
+      homeGoals <
+      awayGoals
+    ) {
+      addResult(
+        homeId,
+        'L'
+      );
+
+      addResult(
+        awayId,
+        'W'
+      );
+    } else {
+      addResult(
+        homeId,
+        'D'
+      );
+
+      addResult(
+        awayId,
+        'D'
+      );
+    }
+  }
+
+  return formMap;
+}
+
+// ============================================================
 // API-FOOTBALL
 // ============================================================
 
@@ -411,14 +497,79 @@ async function apiFetch(
 }
 
 // ============================================================
-// WEBFLOW
+// WEBFLOW — THROTTLED + RETRY SAFE
 // ============================================================
+
+let lastWebflowRequestAt = 0;
+
+async function throttleWebflow() {
+  const elapsed =
+    Date.now() -
+    lastWebflowRequestAt;
+
+  const wait =
+    WEBFLOW_REQUEST_GAP_MS -
+    elapsed;
+
+  if (
+    wait > 0
+  ) {
+    await sleep(wait);
+  }
+
+  lastWebflowRequestAt =
+    Date.now();
+}
+
+function parseRetryAfter(
+  value
+) {
+  if (!value) {
+    return null;
+  }
+
+  const seconds =
+    Number(value);
+
+  if (
+    Number.isFinite(
+      seconds
+    )
+  ) {
+    return Math.max(
+      1000,
+      Math.ceil(
+        seconds * 1000
+      )
+    );
+  }
+
+  const timestamp =
+    Date.parse(value);
+
+  if (
+    Number.isFinite(
+      timestamp
+    )
+  ) {
+    return Math.max(
+      1000,
+      timestamp -
+        Date.now()
+    );
+  }
+
+  return null;
+}
 
 async function wfRequest(
   url,
   options = {},
-  retries = 5
+  retries =
+    WEBFLOW_MAX_RETRIES
 ) {
+  await throttleWebflow();
+
   const res =
     await fetch(
       url,
@@ -429,11 +580,46 @@ async function wfRequest(
     res.status === 429 &&
     retries > 0
   ) {
+    const retryAfter =
+      parseRetryAfter(
+        res.headers.get(
+          'retry-after'
+        )
+      );
+
+    const attempt =
+      WEBFLOW_MAX_RETRIES -
+      retries;
+
+    const fallbackWait =
+      Math.min(
+        120000,
+        15000 *
+          Math.pow(
+            2,
+            attempt
+          )
+      );
+
+    const waitMs =
+      Math.max(
+        retryAfter || 0,
+        fallbackWait
+      );
+
     console.warn(
-      'Webflow rate limited — waiting 8 seconds...'
+      'Webflow rate limited — waiting ' +
+        Math.ceil(
+          waitMs / 1000
+        ) +
+        ' seconds before retry (' +
+        (attempt + 1) +
+        '/' +
+        WEBFLOW_MAX_RETRIES +
+        ')...'
     );
 
-    await sleep(8000);
+    await sleep(waitMs);
 
     return wfRequest(
       url,
@@ -450,7 +636,31 @@ async function wfRequest(
       retries > 0 &&
       res.status >= 500
     ) {
-      await sleep(3000);
+      const attempt =
+        WEBFLOW_MAX_RETRIES -
+        retries;
+
+      const waitMs =
+        Math.min(
+          30000,
+          3000 *
+            Math.pow(
+              2,
+              attempt
+            )
+        );
+
+      console.warn(
+        'Webflow ' +
+          res.status +
+          ' — retrying in ' +
+          Math.ceil(
+            waitMs / 1000
+          ) +
+          ' seconds...'
+      );
+
+      await sleep(waitMs);
 
       return wfRequest(
         url,
@@ -516,9 +726,9 @@ async function wfGetAllItems(
 ) {
   const items = [];
 
-  let offset = 0;
-
   const limit = 100;
+
+  let offset = 0;
 
   while (true) {
     const data =
@@ -570,11 +780,35 @@ async function wfGetCollection(
   );
 }
 
+async function wfGetItem(
+  collectionId,
+  itemId
+) {
+  return wfRequest(
+    'https://api.webflow.com/v2/collections/' +
+      collectionId +
+      '/items/' +
+      itemId,
+    {
+      headers:
+        wfHeaders()
+    }
+  );
+}
+
 async function wfUpdateItem(
   collectionId,
   itemId,
   fieldData
 ) {
+  if (
+    !Object.keys(
+      fieldData
+    ).length
+  ) {
+    return null;
+  }
+
   return wfRequest(
     'https://api.webflow.com/v2/collections/' +
       collectionId +
@@ -630,7 +864,9 @@ async function wfPublishItems(
     ...new Set(itemIds)
   ].filter(Boolean);
 
-  if (!uniqueIds.length) {
+  if (
+    !uniqueIds.length
+  ) {
     return;
   }
 
@@ -662,8 +898,6 @@ async function wfPublishItems(
           })
       }
     );
-
-    await sleep(500);
   }
 }
 
@@ -675,7 +909,9 @@ async function wfUnpublishItems(
     ...new Set(itemIds)
   ].filter(Boolean);
 
-  if (!uniqueIds.length) {
+  if (
+    !uniqueIds.length
+  ) {
     return;
   }
 
@@ -712,9 +948,102 @@ async function wfUnpublishItems(
           })
       }
     );
-
-    await sleep(500);
   }
+}
+
+// ============================================================
+// WEBFLOW CHANGE DETECTION
+// ============================================================
+
+function comparableValue(
+  value
+) {
+  if (
+    value === undefined ||
+    value === null
+  ) {
+    return '';
+  }
+
+  if (
+    typeof value ===
+      'object' &&
+    !Array.isArray(value)
+  ) {
+    // For Webflow image fields the URL is what matters.
+    // Webflow may transform/omit alt metadata, so don't
+    // generate a PATCH every run just because of alt text.
+    if (
+      'url' in value
+    ) {
+      return String(
+        value.url || ''
+      );
+    }
+
+    return JSON.stringify(
+      value
+    );
+  }
+
+  if (
+    Array.isArray(value)
+  ) {
+    return JSON.stringify(
+      value
+    );
+  }
+
+  return String(value);
+}
+
+function valuesEqual(
+  current,
+  next
+) {
+  return (
+    comparableValue(
+      current
+    ) ===
+    comparableValue(
+      next
+    )
+  );
+}
+
+function getChangedFields(
+  itemOrFieldData,
+  proposedFieldData
+) {
+  const current =
+    itemOrFieldData
+      ?.fieldData ||
+    itemOrFieldData ||
+    {};
+
+  const changed = {};
+
+  for (
+    const [
+      key,
+      nextValue
+    ]
+    of Object.entries(
+      proposedFieldData
+    )
+  ) {
+    if (
+      !valuesEqual(
+        current[key],
+        nextValue
+      )
+    ) {
+      changed[key] =
+        nextValue;
+    }
+  }
+
+  return changed;
 }
 
 // ============================================================
@@ -930,6 +1259,8 @@ async function syncTeams(
   const publishIds = [];
 
   let reused = 0;
+  let updated = 0;
+  let unchanged = 0;
   let created = 0;
 
   for (
@@ -944,7 +1275,9 @@ async function syncTeams(
 
     const meta =
       apiMetadata.get(
-        String(apiTeam.id)
+        String(
+          apiTeam.id
+        )
       );
 
     if (match) {
@@ -952,8 +1285,7 @@ async function syncTeams(
 
       // IMPORTANT:
       // Never change existing Team item's league.
-      // Arsenal must remain Premier League etc.
-      const safeUpdate = {
+      const proposed = {
         'api-team-id':
           String(
             apiTeam.id
@@ -963,7 +1295,7 @@ async function syncTeams(
       if (
         meta?.team?.code
       ) {
-        safeUpdate[
+        proposed[
           'short-name'
         ] =
           meta.team.code;
@@ -972,35 +1304,35 @@ async function syncTeams(
       if (
         meta?.team?.country
       ) {
-        safeUpdate.country =
+        proposed.country =
           meta.team.country;
       }
 
       if (
         meta?.team?.founded != null
       ) {
-        safeUpdate.founded =
+        proposed.founded =
           meta.team.founded;
       }
 
       if (
         meta?.venue?.city
       ) {
-        safeUpdate.city =
+        proposed.city =
           meta.venue.city;
       }
 
       if (
         meta?.venue?.name
       ) {
-        safeUpdate.stadium =
+        proposed.stadium =
           meta.venue.name;
       }
 
       if (
         meta?.team?.logo
       ) {
-        safeUpdate.badge = {
+        proposed.badge = {
           url:
             meta.team.logo,
 
@@ -1016,7 +1348,7 @@ async function syncTeams(
       if (
         meta?.team?.country
       ) {
-        safeUpdate.flag =
+        proposed.flag =
           'https://media.api-sports.io/flags/' +
           countryToFlagCode(
             meta.team.country
@@ -1024,28 +1356,59 @@ async function syncTeams(
           '.svg';
       }
 
-      await wfUpdateItem(
-        WF.TEAMS,
-        match.item.id,
-        safeUpdate
-      );
+      const changed =
+        getChangedFields(
+          match.item,
+          proposed
+        );
 
-      publishIds.push(
-        match.item.id
-      );
+      if (
+        Object.keys(
+          changed
+        ).length
+      ) {
+        await wfUpdateItem(
+          WF.TEAMS,
+          match.item.id,
+          changed
+        );
 
-      console.log(
-        'REUSE: ' +
-          apiTeam.name +
-          ' -> ' +
-          getField(
-            match.item,
-            'name'
-          ) +
-          ' [' +
-          match.method +
-          ']'
-      );
+        publishIds.push(
+          match.item.id
+        );
+
+        updated++;
+
+        console.log(
+          'UPDATE: ' +
+            apiTeam.name +
+            ' -> ' +
+            getField(
+              match.item,
+              'name'
+            ) +
+            ' [' +
+            Object.keys(
+              changed
+            ).join(', ') +
+            ']'
+        );
+      } else {
+        unchanged++;
+
+        console.log(
+          'REUSE: ' +
+            apiTeam.name +
+            ' -> ' +
+            getField(
+              match.item,
+              'name'
+            ) +
+            ' [' +
+            match.method +
+            ', no changes]'
+        );
+      }
 
       continue;
     }
@@ -1157,6 +1520,10 @@ async function syncTeams(
     'Teams complete: ' +
       reused +
       ' reused, ' +
+      updated +
+      ' updated, ' +
+      unchanged +
+      ' unchanged, ' +
       created +
       ' created'
   );
@@ -1175,138 +1542,6 @@ async function syncTeams(
     allTeams,
     lookup
   };
-}
-
-// ============================================================
-// UCL LEAGUE PHASE FORM
-// ============================================================
-
-function buildLeaguePhaseFormMap(
-  fixtures
-) {
-  const formMap =
-    new Map();
-
-  const finishedFixtures =
-    fixtures
-      .filter(
-        fixture =>
-          FINISHED_STATUSES.has(
-            fixture.fixture
-              ?.status
-              ?.short
-          )
-      )
-      .sort(
-        (a, b) =>
-          new Date(
-            a.fixture.date
-          ) -
-          new Date(
-            b.fixture.date
-          )
-      );
-
-  function addResult(
-    teamId,
-    result
-  ) {
-    const key =
-      String(teamId);
-
-    const current =
-      formMap.get(key) ||
-      [];
-
-    current.push(
-      result
-    );
-
-    formMap.set(
-      key,
-      current.slice(-5)
-    );
-  }
-
-  for (
-    const fixture
-    of finishedFixtures
-  ) {
-    const homeId =
-      fixture.teams
-        ?.home
-        ?.id;
-
-    const awayId =
-      fixture.teams
-        ?.away
-        ?.id;
-
-    const homeGoals =
-      Number(
-        fixture.goals
-          ?.home
-      );
-
-    const awayGoals =
-      Number(
-        fixture.goals
-          ?.away
-      );
-
-    if (
-      !homeId ||
-      !awayId ||
-      !Number.isFinite(
-        homeGoals
-      ) ||
-      !Number.isFinite(
-        awayGoals
-      )
-    ) {
-      continue;
-    }
-
-    if (
-      homeGoals >
-      awayGoals
-    ) {
-      addResult(
-        homeId,
-        'W'
-      );
-
-      addResult(
-        awayId,
-        'L'
-      );
-    } else if (
-      homeGoals <
-      awayGoals
-    ) {
-      addResult(
-        homeId,
-        'L'
-      );
-
-      addResult(
-        awayId,
-        'W'
-      );
-    } else {
-      addResult(
-        homeId,
-        'D'
-      );
-
-      addResult(
-        awayId,
-        'D'
-      );
-    }
-  }
-
-  return formMap;
 }
 
 // ============================================================
@@ -1356,16 +1591,19 @@ async function syncStandings(
       leagueFixtures
     );
 
+  const finishedLeaguePhase =
+    leagueFixtures.filter(
+      fixture =>
+        FINISHED_STATUSES.has(
+          fixture.fixture
+            ?.status
+            ?.short
+        )
+    );
+
   console.log(
     'UCL League Phase form calculated from ' +
-      leagueFixtures.filter(
-        fixture =>
-          FINISHED_STATUSES.has(
-            fixture.fixture
-              ?.status
-              ?.short
-          )
-      ).length +
+      finishedLeaguePhase.length +
       ' finished League Phase fixtures.'
   );
 
@@ -1399,8 +1637,9 @@ async function syncStandings(
 
     if (
       teamRef &&
-      !existingByTeamRef
-        .has(teamRef)
+      !existingByTeamRef.has(
+        teamRef
+      )
     ) {
       existingByTeamRef.set(
         teamRef,
@@ -1424,14 +1663,9 @@ async function syncStandings(
       'Using live API UCL standings: 36 rows'
     );
 
-    for (
-      const entry
-      of apiTable
-    ) {
-      rows.push(
-        entry
-      );
-    }
+    rows.push(
+      ...apiTable
+    );
   } else {
     console.log(
       'No 36-row API standings yet — writing safe zeroed League Phase table'
@@ -1480,133 +1714,154 @@ async function syncStandings(
   const publishIds = [];
 
   let updated = 0;
+  let unchanged = 0;
   let created = 0;
 
-  await pMap(
-    rows,
-    async entry => {
-      const teamMatch =
-        resolveTeam(
-          entry.team,
-          teamLookup
-        );
-
-      if (!teamMatch) {
-        throw new Error(
-          'Cannot resolve UCL standing team: ' +
-            entry.team.name
-        );
-      }
-
-      const wfTeam =
-        teamMatch.item;
-
-      currentTeamRefs.add(
-        wfTeam.id
+  for (
+    const entry
+    of rows
+  ) {
+    const teamMatch =
+      resolveTeam(
+        entry.team,
+        teamLookup
       );
 
-      const all =
-        entry.all || {};
+    if (!teamMatch) {
+      throw new Error(
+        'Cannot resolve UCL standing team: ' +
+          entry.team.name
+      );
+    }
 
-      const goals =
-        all.goals || {};
+    const wfTeam =
+      teamMatch.item;
 
-      const uclForm =
-        (
-          leaguePhaseFormMap.get(
-            String(
-              entry.team.id
-            )
-          ) || []
-        ).join('');
+    currentTeamRefs.add(
+      wfTeam.id
+    );
 
-      const fieldData = {
-        name:
+    const all =
+      entry.all ||
+      {};
+
+    const goals =
+      all.goals ||
+      {};
+
+    const uclForm =
+      (
+        leaguePhaseFormMap.get(
+          String(
+            entry.team.id
+          )
+        ) || []
+      ).join('');
+
+    const fieldData = {
+      name:
+        getField(
+          wfTeam,
+          'name'
+        ),
+
+      slug:
+        slugify(
           getField(
             wfTeam,
             'name'
-          ),
+          )
+        ) +
+        '-ucl-standing',
 
-        slug:
-          slugify(
-            getField(
-              wfTeam,
-              'name'
-            )
-          ) +
-          '-ucl-standing',
+      team:
+        wfTeam.id,
 
-        team:
-          wfTeam.id,
+      league:
+        UCL.webflow_id,
 
-        league:
-          UCL.webflow_id,
+      position:
+        Number(
+          entry.rank ||
+          0
+        ),
 
-        position:
-          Number(
-            entry.rank || 0
-          ),
+      played:
+        Number(
+          all.played ||
+          0
+        ),
 
-        played:
-          Number(
-            all.played || 0
-          ),
+      won:
+        Number(
+          all.win ||
+          0
+        ),
 
-        won:
-          Number(
-            all.win || 0
-          ),
+      drawn:
+        Number(
+          all.draw ||
+          0
+        ),
 
-        drawn:
-          Number(
-            all.draw || 0
-          ),
+      lost:
+        Number(
+          all.lose ||
+          0
+        ),
 
-        lost:
-          Number(
-            all.lose || 0
-          ),
+      'goals-for':
+        Number(
+          goals.for ||
+          0
+        ),
 
-        'goals-for':
-          Number(
-            goals.for || 0
-          ),
+      'goals-against':
+        Number(
+          goals.against ||
+          0
+        ),
 
-        'goals-against':
-          Number(
-            goals.against || 0
-          ),
+      'goal-difference':
+        Number(
+          entry.goalsDiff ||
+          0
+        ),
 
-        'goal-difference':
-          Number(
-            entry.goalsDiff ||
-              0
-          ),
+      points:
+        Number(
+          entry.points ||
+          0
+        ),
 
-        points:
-          Number(
-            entry.points || 0
-          ),
+      // IMPORTANT:
+      // Never use entry.form here.
+      // This is ONLY UCL League Phase form.
+      form:
+        uclForm
+    };
 
-        // IMPORTANT:
-        // Never use entry.form here.
-        // API-Football can include qualifying/domestic form.
-        // This value is calculated ONLY from finished UCL
-        // League Phase fixtures.
-        form:
-          uclForm
-      };
+    const existing =
+      existingByTeamRef.get(
+        wfTeam.id
+      );
 
-      const existing =
-        existingByTeamRef.get(
-          wfTeam.id
+    if (existing) {
+      const changed =
+        getChangedFields(
+          existing,
+          fieldData
         );
 
-      if (existing) {
+      if (
+        Object.keys(
+          changed
+        ).length
+      ) {
         await wfUpdateItem(
           WF.STANDINGS,
           existing.id,
-          fieldData
+          changed
         );
 
         publishIds.push(
@@ -1614,21 +1869,36 @@ async function syncStandings(
         );
 
         updated++;
-      } else {
-        const newItem =
-          await wfCreateItem(
-            WF.STANDINGS,
-            fieldData
-          );
 
-        publishIds.push(
-          newItem.id
+        console.log(
+          'STANDING UPDATE: ' +
+            getField(
+              wfTeam,
+              'name'
+            ) +
+            ' [' +
+            Object.keys(
+              changed
+            ).join(', ') +
+            ']'
+        );
+      } else {
+        unchanged++;
+      }
+    } else {
+      const newItem =
+        await wfCreateItem(
+          WF.STANDINGS,
+          fieldData
         );
 
-        created++;
-      }
+      publishIds.push(
+        newItem.id
+      );
+
+      created++;
     }
-  );
+  }
 
   await wfPublishItems(
     WF.STANDINGS,
@@ -1677,6 +1947,8 @@ async function syncStandings(
     'Standings complete: ' +
       updated +
       ' updated, ' +
+      unchanged +
+      ' unchanged, ' +
       created +
       ' created, ' +
       staleLiveIds.length +
@@ -1711,10 +1983,13 @@ async function unpublishUclFixturesUntilScheduleReady() {
 
   const ids =
     liveUclMatches.map(
-      item => item.id
+      item =>
+        item.id
     );
 
-  if (!ids.length) {
+  if (
+    !ids.length
+  ) {
     console.log(
       'No live UCL fixtures to unpublish.'
     );
@@ -1805,152 +2080,170 @@ async function syncMatches(
   const publishIds = [];
 
   let updated = 0;
+  let unchanged = 0;
   let created = 0;
 
-  await pMap(
-    leagueFixtures,
-    async fixture => {
-      const home =
-        resolveTeam(
-          fixture.teams?.home,
-          teamLookup
-        );
+  for (
+    const fixture
+    of leagueFixtures
+  ) {
+    const home =
+      resolveTeam(
+        fixture.teams?.home,
+        teamLookup
+      );
 
-      const away =
-        resolveTeam(
-          fixture.teams?.away,
-          teamLookup
+    const away =
+      resolveTeam(
+        fixture.teams?.away,
+        teamLookup
+      );
+
+    if (
+      !home ||
+      !away
+    ) {
+      throw new Error(
+        'Cannot resolve fixture teams: ' +
+          (
+            fixture.teams
+              ?.home
+              ?.name ||
+            '?'
+          ) +
+          ' vs ' +
+          (
+            fixture.teams
+              ?.away
+              ?.name ||
+            '?'
+          )
+      );
+    }
+
+    const fixtureId =
+      String(
+        fixture.fixture.id
+      );
+
+    const matchweek =
+      matchweekInfo
+        .byFixtureId
+        .get(
+          fixtureId
+        ) ||
+      null;
+
+    const homeName =
+      getField(
+        home.item,
+        'name'
+      );
+
+    const awayName =
+      getField(
+        away.item,
+        'name'
+      );
+
+    const fieldData = {
+      name:
+        homeName +
+        ' vs ' +
+        awayName,
+
+      slug:
+        slugify(
+          homeName
+        ) +
+        '-vs-' +
+        slugify(
+          awayName
+        ) +
+        '-' +
+        fixtureId,
+
+      league:
+        UCL.webflow_id,
+
+      'home-team':
+        home.item.id,
+
+      'away-team':
+        away.item.id,
+
+      'home-badge':
+        getField(
+          home.item,
+          'badge'
+        ) ||
+        null,
+
+      'away-badge':
+        getField(
+          away.item,
+          'badge'
+        ) ||
+        null,
+
+      'match-date':
+        fixture.fixture.date,
+
+      'round-label':
+        fixture.league
+          ?.round ||
+        'Group Stage',
+
+      matchweek,
+
+      'home-score':
+        fixture.goals
+          ?.home ??
+        null,
+
+      'away-score':
+        fixture.goals
+          ?.away ??
+        null,
+
+      status:
+        mapMatchStatus(
+          fixture.fixture
+            .status
+            ?.short
+        ),
+
+      venue:
+        fixture.fixture
+          .venue
+          ?.name ||
+        '',
+
+      'api-fixture-id':
+        fixture.fixture.id
+    };
+
+    const existing =
+      existingByApiId.get(
+        fixtureId
+      );
+
+    if (existing) {
+      const changed =
+        getChangedFields(
+          existing,
+          fieldData
         );
 
       if (
-        !home ||
-        !away
+        Object.keys(
+          changed
+        ).length
       ) {
-        throw new Error(
-          'Cannot resolve fixture teams: ' +
-            (
-              fixture.teams
-                ?.home
-                ?.name ||
-              '?'
-            ) +
-            ' vs ' +
-            (
-              fixture.teams
-                ?.away
-                ?.name ||
-              '?'
-            )
-        );
-      }
-
-      const fixtureId =
-        String(
-          fixture.fixture.id
-        );
-
-      const matchweek =
-        matchweekInfo
-          .byFixtureId
-          .get(
-            fixtureId
-          ) || null;
-
-      const homeName =
-        getField(
-          home.item,
-          'name'
-        );
-
-      const awayName =
-        getField(
-          away.item,
-          'name'
-        );
-
-      const fieldData = {
-        name:
-          homeName +
-          ' vs ' +
-          awayName,
-
-        slug:
-          slugify(
-            homeName
-          ) +
-          '-vs-' +
-          slugify(
-            awayName
-          ) +
-          '-' +
-          fixtureId,
-
-        league:
-          UCL.webflow_id,
-
-        'home-team':
-          home.item.id,
-
-        'away-team':
-          away.item.id,
-
-        'home-badge':
-          getField(
-            home.item,
-            'badge'
-          ) || null,
-
-        'away-badge':
-          getField(
-            away.item,
-            'badge'
-          ) || null,
-
-        'match-date':
-          fixture.fixture.date,
-
-        'round-label':
-          fixture.league
-            ?.round ||
-          'Group Stage',
-
-        matchweek,
-
-        'home-score':
-          fixture.goals
-            ?.home ?? null,
-
-        'away-score':
-          fixture.goals
-            ?.away ?? null,
-
-        status:
-          mapMatchStatus(
-            fixture.fixture
-              .status
-              ?.short
-          ),
-
-        venue:
-          fixture.fixture
-            .venue
-            ?.name ||
-          '',
-
-        'api-fixture-id':
-          fixture.fixture.id
-      };
-
-      const existing =
-        existingByApiId.get(
-          fixtureId
-        );
-
-      if (existing) {
         await wfUpdateItem(
           WF.MATCHES,
           existing.id,
-          fieldData
+          changed
         );
 
         publishIds.push(
@@ -1959,20 +2252,22 @@ async function syncMatches(
 
         updated++;
       } else {
-        const newItem =
-          await wfCreateItem(
-            WF.MATCHES,
-            fieldData
-          );
-
-        publishIds.push(
-          newItem.id
+        unchanged++;
+      }
+    } else {
+      const newItem =
+        await wfCreateItem(
+          WF.MATCHES,
+          fieldData
         );
 
-        created++;
-      }
+      publishIds.push(
+        newItem.id
+      );
+
+      created++;
     }
-  );
+  }
 
   await wfPublishItems(
     WF.MATCHES,
@@ -2021,6 +2316,8 @@ async function syncMatches(
     'Matches complete: ' +
       updated +
       ' updated, ' +
+      unchanged +
+      ' unchanged, ' +
       created +
       ' created, ' +
       staleLiveIds.length +
@@ -2066,7 +2363,8 @@ function findFieldByNames(
             field.displayName
           )
         )
-    ) || null
+    ) ||
+    null
   );
 }
 
@@ -2078,15 +2376,25 @@ async function syncLeagueMetadata(
     '\n=== LEAGUE METADATA ==='
   );
 
+  // Keep these sequential so Webflow calls
+  // cannot race our own throttle.
   const collection =
     await wfGetCollection(
       WF.LEAGUES
     );
 
+  const leagueItem =
+    await wfGetItem(
+      WF.LEAGUES,
+      UCL.webflow_id
+    );
+
   const seasonField =
     findFieldByNames(
       collection,
-      ['Season']
+      [
+        'Season'
+      ]
     );
 
   const clubsField =
@@ -2110,13 +2418,17 @@ async function syncLeagueMetadata(
   const goalsField =
     findFieldByNames(
       collection,
-      ['Total Goals']
+      [
+        'Total Goals'
+      ]
     );
 
   const gpgField =
     findFieldByNames(
       collection,
-      ['Goals Per Game']
+      [
+        'Goals Per Game'
+      ]
     );
 
   const startedOrFinished =
@@ -2220,38 +2532,38 @@ async function syncLeagueMetadata(
           )
       : '0';
 
-  const update = {};
+  const proposed = {};
 
   if (seasonField) {
-    update[
+    proposed[
       seasonField.slug
     ] =
       UCL.seasonLabel;
   }
 
   if (clubsField) {
-    update[
+    proposed[
       clubsField.slug
     ] =
       EXPECTED_TEAMS;
   }
 
   if (matchdayField) {
-    update[
+    proposed[
       matchdayField.slug
     ] =
       currentMatchday;
   }
 
   if (goalsField) {
-    update[
+    proposed[
       goalsField.slug
     ] =
       totalGoals;
   }
 
   if (gpgField) {
-    update[
+    proposed[
       gpgField.slug
     ] =
       String(
@@ -2259,29 +2571,41 @@ async function syncLeagueMetadata(
       );
   }
 
-  console.log(
-    'Metadata update:',
-    update
-  );
+  const changed =
+    getChangedFields(
+      leagueItem,
+      proposed
+    );
 
   if (
-    Object.keys(
-      update
+    !Object.keys(
+      changed
     ).length
   ) {
-    await wfUpdateItem(
-      WF.LEAGUES,
-      UCL.webflow_id,
-      update
+    console.log(
+      'League metadata unchanged — skipping Webflow write.'
     );
 
-    await wfPublishItems(
-      WF.LEAGUES,
-      [
-        UCL.webflow_id
-      ]
-    );
+    return;
   }
+
+  console.log(
+    'Metadata changes:',
+    changed
+  );
+
+  await wfUpdateItem(
+    WF.LEAGUES,
+    UCL.webflow_id,
+    changed
+  );
+
+  await wfPublishItems(
+    WF.LEAGUES,
+    [
+      UCL.webflow_id
+    ]
+  );
 }
 
 // ============================================================
@@ -2308,6 +2632,10 @@ async function main() {
 
   console.log(
     'League Phase only'
+  );
+
+  console.log(
+    'Rate-limit-safe mode enabled'
   );
 
   console.log(
@@ -2388,7 +2716,7 @@ async function main() {
   );
 
   // HARD SAFETY GATE:
-  // qualifiers cannot leak into production.
+  // Qualifiers cannot leak into production.
   if (
     finalTeams.length !==
       EXPECTED_TEAMS ||
@@ -2416,7 +2744,7 @@ async function main() {
 
   if (
     matchweekInfo.count !==
-    8
+    EXPECTED_MATCHWEEKS
   ) {
     console.warn(
       'WARNING: expected 8 matchweek date clusters, got ' +
@@ -2454,7 +2782,8 @@ async function main() {
   );
 
   if (
-    matchweekInfo.count === 8
+    matchweekInfo.count ===
+    EXPECTED_MATCHWEEKS
   ) {
     console.log(
       '\nFinal UCL schedule detected: 8 matchweeks.'
@@ -2473,7 +2802,8 @@ async function main() {
     console.log(
       'Detected matchweek clusters: ' +
         matchweekInfo.count +
-        ' / 8'
+        ' / ' +
+        EXPECTED_MATCHWEEKS
     );
 
     await unpublishUclFixturesUntilScheduleReady();
