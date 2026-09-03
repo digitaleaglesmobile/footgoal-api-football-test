@@ -17,6 +17,13 @@
 // - Publish current Top 10
 // - Unpublish stale scorers, but DO NOT delete them
 //
+// UCL SPECIAL HANDLING:
+// - API-Football includes qualifying-round scorers in league=2
+// - We detect the 36 League Phase teams from League Phase fixtures
+// - Qualifier-only teams are ignored
+// - Ranking is applied AFTER filtering
+// - Before the League Phase actually starts, UCL scorers stay unpublished
+//
 // If a league has no 2026 scorer data yet:
 // - its existing scorer items are unpublished
 // - they remain saved in Webflow CMS
@@ -44,6 +51,8 @@ const TEAMS_COLLECTION_ID =
   '6a20064807685f373db26660';
 
 const TARGET_TOP_N = 10;
+
+const EXPECTED_UCL_TEAMS = 36;
 
 
 const LEAGUES = [
@@ -154,6 +163,120 @@ function looksAbbreviated(name) {
 
 
 // ============================================================
+// UCL LEAGUE PHASE HELPERS
+// ============================================================
+
+function isUclLeaguePhaseRound(round) {
+  return /(?:league\s*(stage|phase)|group\s*stage)/i.test(
+    String(round || '')
+  );
+}
+
+
+function isFinishedFixture(fixture) {
+  const status =
+    String(
+      fixture &&
+      fixture.fixture &&
+      fixture.fixture.status
+        ? fixture.fixture.status.short
+        : ''
+    );
+
+  return [
+    'FT',
+    'AET',
+    'PEN'
+  ].includes(status);
+}
+
+
+function getScorerTeam(entry) {
+  if (
+    !entry ||
+    !entry.statistics ||
+    !entry.statistics[0]
+  ) {
+    return null;
+  }
+
+  return entry.statistics[0].team || null;
+}
+
+
+async function getUclLeaguePhaseContext(league) {
+  const data =
+    await apiFetch(
+      '/fixtures?league=' +
+        league.api_id +
+        '&season=' +
+        league.season
+    );
+
+  const fixtures =
+    (data.response || [])
+      .filter(
+        fixture =>
+          isUclLeaguePhaseRound(
+            fixture &&
+            fixture.league
+              ? fixture.league.round
+              : ''
+          )
+      );
+
+  const teamIds =
+    new Set();
+
+  for (const fixture of fixtures) {
+    if (
+      fixture &&
+      fixture.teams &&
+      fixture.teams.home &&
+      fixture.teams.home.id != null
+    ) {
+      teamIds.add(
+        String(
+          fixture.teams.home.id
+        )
+      );
+    }
+
+    if (
+      fixture &&
+      fixture.teams &&
+      fixture.teams.away &&
+      fixture.teams.away.id != null
+    ) {
+      teamIds.add(
+        String(
+          fixture.teams.away.id
+        )
+      );
+    }
+  }
+
+  const finishedFixtures =
+    fixtures.filter(
+      fixture =>
+        isFinishedFixture(fixture)
+    );
+
+  return {
+    ready:
+      teamIds.size ===
+      EXPECTED_UCL_TEAMS,
+
+    teamIds,
+
+    fixtures,
+
+    finishedFixtures
+  };
+}
+
+
+// ============================================================
 // PLAYER DISPLAY NAME
 // ============================================================
 
@@ -185,8 +308,12 @@ function getFullApiName(player) {
 }
 
 
-function getPreferredPlayerName(player, existingItem = null) {
-  const fullApiName = getFullApiName(player);
+function getPreferredPlayerName(
+  player,
+  existingItem = null
+) {
+  const fullApiName =
+    getFullApiName(player);
 
   if (fullApiName) {
     return fullApiName;
@@ -200,7 +327,10 @@ function getPreferredPlayerName(player, existingItem = null) {
 
   const existingName = existingItem
     ? String(
-        getField(existingItem, 'name') || ''
+        getField(
+          existingItem,
+          'name'
+        ) || ''
       ).trim()
     : '';
 
@@ -218,23 +348,34 @@ function getPreferredPlayerName(player, existingItem = null) {
 
 
 function getPossibleExactNames(player) {
-  const values = new Set();
+  const values =
+    new Set();
 
-  if (player && player.name) {
+  if (
+    player &&
+    player.name
+  ) {
     values.add(
-      normalizeName(player.name)
+      normalizeName(
+        player.name
+      )
     );
   }
 
-  const fullName = getFullApiName(player);
+  const fullName =
+    getFullApiName(player);
 
   if (fullName) {
     values.add(
-      normalizeName(fullName)
+      normalizeName(
+        fullName
+      )
     );
   }
 
-  return [...values].filter(Boolean);
+  return [
+    ...values
+  ].filter(Boolean);
 }
 
 
@@ -242,18 +383,23 @@ function getPossibleExactNames(player) {
 // API FOOTBALL
 // ============================================================
 
-async function apiFetch(path, retries = 3) {
+async function apiFetch(
+  path,
+  retries = 3
+) {
   await sleep(250);
 
-  const res = await fetch(
-    'https://v3.football.api-sports.io' + path,
-    {
-      headers: {
-        'x-apisports-key':
-          API_FOOTBALL_KEY
+  const res =
+    await fetch(
+      'https://v3.football.api-sports.io' +
+        path,
+      {
+        headers: {
+          'x-apisports-key':
+            API_FOOTBALL_KEY
+        }
       }
-    }
-  );
+    );
 
   if (
     res.status === 429 &&
@@ -280,15 +426,20 @@ async function apiFetch(path, retries = 3) {
     );
   }
 
-  const data = await res.json();
+  const data =
+    await res.json();
 
   if (
     data.errors &&
-    Object.keys(data.errors).length
+    Object.keys(
+      data.errors
+    ).length
   ) {
     throw new Error(
       'API-Football errors: ' +
-      JSON.stringify(data.errors)
+      JSON.stringify(
+        data.errors
+      )
     );
   }
 
@@ -305,10 +456,11 @@ async function wfRequest(
   options = {},
   retries = 4
 ) {
-  const res = await fetch(
-    url,
-    options
-  );
+  const res =
+    await fetch(
+      url,
+      options
+    );
 
   if (
     res.status === 429 &&
@@ -336,18 +488,23 @@ async function wfRequest(
     );
   }
 
-  if (res.status === 204) {
+  if (
+    res.status === 204
+  ) {
     return null;
   }
 
-  const text = await res.text();
+  const text =
+    await res.text();
 
   if (!text) {
     return null;
   }
 
   try {
-    return JSON.parse(text);
+    return JSON.parse(
+      text
+    );
   } catch {
     return text;
   }
@@ -358,33 +515,39 @@ async function wfRequest(
 // WEBFLOW READ
 // ============================================================
 
-async function wfGetAllItems(collectionId) {
+async function wfGetAllItems(
+  collectionId
+) {
   const items = [];
 
   let offset = 0;
   const limit = 100;
 
   while (true) {
-    const data = await wfRequest(
-      'https://api.webflow.com/v2/collections/' +
-        collectionId +
-        '/items?limit=' +
-        limit +
-        '&offset=' +
-        offset,
-      {
-        headers: {
-          Authorization:
-            'Bearer ' + WEBFLOW_TOKEN,
+    const data =
+      await wfRequest(
+        'https://api.webflow.com/v2/collections/' +
+          collectionId +
+          '/items?limit=' +
+          limit +
+          '&offset=' +
+          offset,
+        {
+          headers: {
+            Authorization:
+              'Bearer ' +
+              WEBFLOW_TOKEN,
 
-          accept:
-            'application/json'
+            accept:
+              'application/json'
+          }
         }
-      }
-    );
+      );
 
     items.push(
-      ...(data.items || [])
+      ...(
+        data.items || []
+      )
     );
 
     const total =
@@ -424,7 +587,8 @@ async function wfUpdateItem(
 
       headers: {
         Authorization:
-          'Bearer ' + WEBFLOW_TOKEN,
+          'Bearer ' +
+          WEBFLOW_TOKEN,
 
         accept:
           'application/json',
@@ -433,11 +597,12 @@ async function wfUpdateItem(
           'application/json'
       },
 
-      body: JSON.stringify({
-        isArchived: false,
-        isDraft: false,
-        fieldData
-      })
+      body:
+        JSON.stringify({
+          isArchived: false,
+          isDraft: false,
+          fieldData
+        })
     }
   );
 }
@@ -456,7 +621,8 @@ async function wfCreateItem(
 
       headers: {
         Authorization:
-          'Bearer ' + WEBFLOW_TOKEN,
+          'Bearer ' +
+          WEBFLOW_TOKEN,
 
         accept:
           'application/json',
@@ -465,11 +631,12 @@ async function wfCreateItem(
           'application/json'
       },
 
-      body: JSON.stringify({
-        isArchived: false,
-        isDraft: false,
-        fieldData
-      })
+      body:
+        JSON.stringify({
+          isArchived: false,
+          isDraft: false,
+          fieldData
+        })
     }
   );
 }
@@ -484,7 +651,11 @@ async function wfPublishItems(
   itemIds
 ) {
   const uniqueIds =
-    [...new Set(itemIds)];
+    [
+      ...new Set(
+        itemIds
+      )
+    ];
 
   if (!uniqueIds.length) {
     return;
@@ -510,7 +681,8 @@ async function wfPublishItems(
 
         headers: {
           Authorization:
-            'Bearer ' + WEBFLOW_TOKEN,
+            'Bearer ' +
+            WEBFLOW_TOKEN,
 
           accept:
             'application/json',
@@ -519,9 +691,11 @@ async function wfPublishItems(
             'application/json'
         },
 
-        body: JSON.stringify({
-          itemIds: batch
-        })
+        body:
+          JSON.stringify({
+            itemIds:
+              batch
+          })
       }
     );
 
@@ -539,7 +713,11 @@ async function wfUnpublishItems(
   itemIds
 ) {
   const uniqueIds =
-    [...new Set(itemIds)];
+    [
+      ...new Set(
+        itemIds
+      )
+    ];
 
   if (!uniqueIds.length) {
     return;
@@ -565,7 +743,8 @@ async function wfUnpublishItems(
 
         headers: {
           Authorization:
-            'Bearer ' + WEBFLOW_TOKEN,
+            'Bearer ' +
+            WEBFLOW_TOKEN,
 
           accept:
             'application/json',
@@ -574,11 +753,15 @@ async function wfUnpublishItems(
             'application/json'
         },
 
-        body: JSON.stringify({
-          items: batch.map(id => ({
-            id
-          }))
-        })
+        body:
+          JSON.stringify({
+            items:
+              batch.map(
+                id => ({
+                  id
+                })
+              )
+          })
       }
     );
 
@@ -591,11 +774,19 @@ async function wfUnpublishItems(
 // TEAM LOOKUP
 // ============================================================
 
-function buildTeamLookup(allTeams) {
-  const byApiId = new Map();
-  const byName = new Map();
+function buildTeamLookup(
+  allTeams
+) {
+  const byApiId =
+    new Map();
 
-  for (const team of allTeams) {
+  const byName =
+    new Map();
+
+  for (
+    const team
+    of allTeams
+  ) {
     const apiId =
       getField(
         team,
@@ -620,7 +811,9 @@ function buildTeamLookup(allTeams) {
         normalizeName(name);
 
       if (
-        !byName.has(normalized)
+        !byName.has(
+          normalized
+        )
       ) {
         byName.set(
           normalized,
@@ -653,13 +846,16 @@ function resolveTeam(
     teamLookup
       .byApiId
       .get(
-        String(apiTeam.id)
+        String(
+          apiTeam.id
+        )
       );
 
   if (idMatch) {
     return {
       item: idMatch,
-      method: 'api-team-id'
+      method:
+        'api-team-id'
     };
   }
 
@@ -671,14 +867,19 @@ function resolveTeam(
   const exact =
     teamLookup
       .byName
-      .get(normalized) || [];
+      .get(
+        normalized
+      ) || [];
 
   if (
     exact.length === 1
   ) {
     return {
-      item: exact[0],
-      method: 'exact-name'
+      item:
+        exact[0],
+
+      method:
+        'exact-name'
     };
   }
 
@@ -690,14 +891,19 @@ function resolveTeam(
 // EXISTING SCORER LOOKUP
 // ============================================================
 
-function buildExistingLookup(items) {
+function buildExistingLookup(
+  items
+) {
   const byApiPlayerId =
     new Map();
 
   const byExactName =
     new Map();
 
-  for (const item of items) {
+  for (
+    const item
+    of items
+  ) {
     const apiId =
       getField(
         item,
@@ -715,7 +921,9 @@ function buildExistingLookup(items) {
         String(apiId);
 
       if (
-        !byApiPlayerId.has(key)
+        !byApiPlayerId.has(
+          key
+        )
       ) {
         byApiPlayerId.set(
           key,
@@ -730,7 +938,9 @@ function buildExistingLookup(items) {
 
     if (name) {
       const normalized =
-        normalizeName(name);
+        normalizeName(
+          name
+        );
 
       if (
         !byExactName.has(
@@ -776,7 +986,9 @@ function scoreExistingCandidate(
     );
 
   const possibleNames =
-    getPossibleExactNames(player);
+    getPossibleExactNames(
+      player
+    );
 
   if (
     possibleNames.includes(
@@ -792,7 +1004,8 @@ function scoreExistingCandidate(
         item,
         'season'
       ) || ''
-    ) === String(season)
+    ) ===
+    String(season)
   ) {
     score += 20;
   }
@@ -827,7 +1040,9 @@ function pickBestCandidate(
     return null;
   }
 
-  return [...available].sort(
+  return [
+    ...available
+  ].sort(
     (a, b) =>
       scoreExistingCandidate(
         b,
@@ -853,10 +1068,13 @@ function findExactNameCandidates(
   alreadyMatchedIds
 ) {
   const result = [];
-  const seen = new Set();
+  const seen =
+    new Set();
 
   const names =
-    getPossibleExactNames(player);
+    getPossibleExactNames(
+      player
+    );
 
   for (
     const normalizedName
@@ -874,7 +1092,9 @@ function findExactNameCandidates(
       of matches
     ) {
       if (
-        seen.has(item.id) ||
+        seen.has(
+          item.id
+        ) ||
         alreadyMatchedIds.has(
           item.id
         )
@@ -882,8 +1102,13 @@ function findExactNameCandidates(
         continue;
       }
 
-      seen.add(item.id);
-      result.push(item);
+      seen.add(
+        item.id
+      );
+
+      result.push(
+        item
+      );
     }
   }
 
@@ -930,14 +1155,17 @@ function buildCurrentFieldData({
       preferredName,
 
     'api-player-id':
-      String(player.id),
+      String(
+        player.id
+      ),
 
     goals,
 
     assists,
 
     nationality:
-      player.nationality || '',
+      player.nationality ||
+      '',
 
     season:
       String(
@@ -1120,10 +1348,214 @@ async function main() {
     }
 
     const apiList =
-      apiData.response || [];
+      apiData.response ||
+      [];
+
+    let eligibleApiList =
+      apiList;
+
+
+    // ========================================================
+    // UCL SPECIAL FILTER
+    // ========================================================
+
+    if (
+      league.code ===
+      'UCL'
+    ) {
+      console.log(
+        'Building UCL League Phase filter...'
+      );
+
+      let uclContext;
+
+      try {
+        uclContext =
+          await getUclLeaguePhaseContext(
+            league
+          );
+      } catch (err) {
+        totalErrors++;
+
+        console.error(
+          'UCL LEAGUE PHASE FILTER ERROR — skipping UCL safely:',
+          err.message
+        );
+
+        continue;
+      }
+
+      console.log(
+        'UCL League Phase teams found: ' +
+        uclContext.teamIds.size +
+        '/' +
+        EXPECTED_UCL_TEAMS
+      );
+
+      console.log(
+        'UCL League Phase fixtures found: ' +
+        uclContext.fixtures.length
+      );
+
+      console.log(
+        'Finished UCL League Phase fixtures: ' +
+        uclContext.finishedFixtures.length
+      );
+
+
+      // ------------------------------------------------------
+      // SAFETY:
+      // Do not trust an incomplete League Phase fixture set.
+      // ------------------------------------------------------
+
+      if (!uclContext.ready) {
+        console.warn(
+          'UCL League Phase fixture set is not ready.'
+        );
+
+        console.warn(
+          'Skipping UCL without changing existing CMS items.'
+        );
+
+        continue;
+      }
+
+
+      // ------------------------------------------------------
+      // BEFORE LEAGUE PHASE STARTS:
+      // API top scorers = qualification scorers.
+      // We do NOT want those displayed.
+      // ------------------------------------------------------
+
+      if (
+        uclContext
+          .finishedFixtures
+          .length === 0
+      ) {
+        console.log(
+          'No finished UCL League Phase matches yet.'
+        );
+
+        console.log(
+          'Qualification scorers will NOT be displayed.'
+        );
+
+        const liveOldIds =
+          leagueItems
+            .filter(
+              item =>
+                !item.isDraft
+            )
+            .map(
+              item =>
+                item.id
+            );
+
+        if (
+          !liveOldIds.length
+        ) {
+          console.log(
+            'No published UCL scorer items need unpublishing.'
+          );
+
+          continue;
+        }
+
+        console.log(
+          'Unpublishing ' +
+          liveOldIds.length +
+          ' existing UCL scorer item(s)...'
+        );
+
+        try {
+          await wfUnpublishItems(
+            TOP_SCORERS_COLLECTION_ID,
+            liveOldIds
+          );
+
+          totalUnpublished +=
+            liveOldIds.length;
+
+          console.log(
+            'UCL scorer items unpublished until League Phase begins.'
+          );
+        } catch (err) {
+          totalErrors++;
+
+          console.error(
+            'UCL UNPUBLISH ERROR:',
+            err.message
+          );
+        }
+
+        continue;
+      }
+
+
+      // ------------------------------------------------------
+      // LEAGUE PHASE HAS STARTED:
+      // Keep only players whose team belongs to the
+      // 36 League Phase teams.
+      // ------------------------------------------------------
+
+      eligibleApiList =
+        apiList.filter(
+          entry => {
+            const team =
+              getScorerTeam(
+                entry
+              );
+
+            const allowed =
+              team &&
+              team.id != null &&
+              uclContext
+                .teamIds
+                .has(
+                  String(
+                    team.id
+                  )
+                );
+
+            if (!allowed) {
+              console.log(
+                'UCL QUALIFIER FILTER: skipping ' +
+                (
+                  entry &&
+                  entry.player &&
+                  entry.player.name
+                    ? entry.player.name
+                    : 'unknown player'
+                ) +
+                ' — ' +
+                (
+                  team &&
+                  team.name
+                    ? team.name
+                    : 'unknown team'
+                )
+              );
+            }
+
+            return allowed;
+          }
+        );
+
+      console.log(
+        'UCL eligible League Phase scorers: ' +
+        eligibleApiList.length +
+        '/' +
+        apiList.length
+      );
+    }
+
+
+    // ========================================================
+    // TAKE TOP 10 AFTER UCL FILTERING
+    // ========================================================
 
     const currentTop =
-      apiList.slice(
+      eligibleApiList.slice(
         0,
         TARGET_TOP_N
       );
@@ -1138,11 +1570,17 @@ async function main() {
       currentTop.length
     );
 
+
+    // ========================================================
+    // NO CURRENT SCORERS
+    // ========================================================
+
     if (
-      currentTop.length === 0
+      currentTop.length ===
+      0
     ) {
       console.log(
-        'No 2026 scorer data yet.'
+        'No valid 2026 scorer data yet.'
       );
 
       const liveOldIds =
@@ -1152,10 +1590,13 @@ async function main() {
               !item.isDraft
           )
           .map(
-            item => item.id
+            item =>
+              item.id
           );
 
-      if (!liveOldIds.length) {
+      if (
+        !liveOldIds.length
+      ) {
         console.log(
           'No live stale scorer items to unpublish.'
         );
@@ -1193,13 +1634,20 @@ async function main() {
       continue;
     }
 
+
     const matchedCmsIds =
       new Set();
 
-    const publishIds = [];
+    const publishIds =
+      [];
 
-    let leagueHadError = false;
+    let leagueHadError =
+      false;
 
+
+    // ========================================================
+    // SYNC CURRENT TOP SCORERS
+    // ========================================================
 
     for (
       let index = 0;
@@ -1242,13 +1690,15 @@ async function main() {
 
       const teamMatch =
         resolveTeam(
-          stats.team || null,
+          stats.team ||
+          null,
           teamLookup
         );
 
       if (!teamMatch) {
         totalErrors++;
-        leagueHadError = true;
+        leagueHadError =
+          true;
 
         console.error(
           'TEAM MATCH FAILED:',
@@ -1284,6 +1734,11 @@ async function main() {
           ? 'api-player-id'
           : null;
 
+
+      // ------------------------------------------------------
+      // Exact full-name fallback
+      // ------------------------------------------------------
+
       if (!existingItem) {
         const exactCandidates =
           findExactNameCandidates(
@@ -1293,7 +1748,8 @@ async function main() {
           );
 
         if (
-          exactCandidates.length === 1
+          exactCandidates.length ===
+          1
         ) {
           existingItem =
             exactCandidates[0];
@@ -1303,7 +1759,8 @@ async function main() {
         }
 
         if (
-          exactCandidates.length > 1
+          exactCandidates.length >
+          1
         ) {
           console.warn(
             'Multiple exact-name CMS matches found.'
@@ -1314,6 +1771,11 @@ async function main() {
           );
         }
       }
+
+
+      // ------------------------------------------------------
+      // UPDATE EXISTING ITEM
+      // ------------------------------------------------------
 
       if (existingItem) {
         matchedCmsIds.add(
@@ -1341,7 +1803,8 @@ async function main() {
             getField(
               existingItem,
               'name'
-            ) || existingItem.id
+            ) ||
+            existingItem.id
           )
         );
 
@@ -1359,7 +1822,10 @@ async function main() {
 
         console.log(
           'Team: ' +
-          teamMatch.item.fieldData.name
+          teamMatch
+            .item
+            .fieldData
+            .name
         );
 
         try {
@@ -1387,7 +1853,9 @@ async function main() {
           );
         } catch (err) {
           totalErrors++;
-          leagueHadError = true;
+
+          leagueHadError =
+            true;
 
           console.error(
             'UPDATE FAILED:',
@@ -1400,6 +1868,11 @@ async function main() {
         continue;
       }
 
+
+      // ------------------------------------------------------
+      // CREATE NEW ITEM
+      // ------------------------------------------------------
+
       const fieldData =
         buildCurrentFieldData({
           player,
@@ -1407,7 +1880,8 @@ async function main() {
           league,
           rank,
           teamMatch,
-          existingItem: null
+          existingItem:
+            null
         });
 
       fieldData.slug =
@@ -1415,7 +1889,8 @@ async function main() {
           fieldData.name
         ) +
         '-' +
-        league.code.toLowerCase() +
+        league.code
+          .toLowerCase() +
         '-' +
         league.season +
         '-' +
@@ -1439,7 +1914,10 @@ async function main() {
 
       console.log(
         'Team: ' +
-        teamMatch.item.fieldData.name
+        teamMatch
+          .item
+          .fieldData
+          .name
       );
 
       try {
@@ -1473,7 +1951,9 @@ async function main() {
         );
       } catch (err) {
         totalErrors++;
-        leagueHadError = true;
+
+        leagueHadError =
+          true;
 
         console.error(
           'CREATE FAILED:',
@@ -1485,7 +1965,13 @@ async function main() {
     }
 
 
-    if (publishIds.length) {
+    // ========================================================
+    // PUBLISH CURRENT ITEMS
+    // ========================================================
+
+    if (
+      publishIds.length
+    ) {
       console.log(
         '\nPublishing ' +
         publishIds.length +
@@ -1506,7 +1992,9 @@ async function main() {
         );
       } catch (err) {
         totalErrors++;
-        leagueHadError = true;
+
+        leagueHadError =
+          true;
 
         console.error(
           'PUBLISH ERROR:',
@@ -1515,6 +2003,10 @@ async function main() {
       }
     }
 
+
+    // ========================================================
+    // SAFETY — DO NOT CLEAN STALE ITEMS AFTER ERROR
+    // ========================================================
 
     if (leagueHadError) {
       console.warn(
@@ -1527,6 +2019,11 @@ async function main() {
 
       continue;
     }
+
+
+    // ========================================================
+    // UNPUBLISH STALE ITEMS
+    // ========================================================
 
     const staleItems =
       leagueItems.filter(
@@ -1547,7 +2044,9 @@ async function main() {
       staleItems.length
     );
 
-    if (!liveStaleItems.length) {
+    if (
+      !liveStaleItems.length
+    ) {
       console.log(
         'No live stale items need unpublishing.'
       );
@@ -1571,7 +2070,8 @@ async function main() {
           getField(
             stale,
             'name'
-          ) || stale.id
+          ) ||
+          stale.id
         )
       );
     }
@@ -1580,7 +2080,8 @@ async function main() {
       await wfUnpublishItems(
         TOP_SCORERS_COLLECTION_ID,
         liveStaleItems.map(
-          item => item.id
+          item =>
+            item.id
         )
       );
 
@@ -1600,6 +2101,10 @@ async function main() {
     }
   }
 
+
+  // ==========================================================
+  // SUMMARY
+  // ==========================================================
 
   console.log(
     '\n\n============================================================'
@@ -1643,12 +2148,15 @@ async function main() {
     totalErrors
   );
 
-  if (totalErrors > 0) {
+  if (
+    totalErrors > 0
+  ) {
     console.log(
       '\nCompleted with warnings/errors. Review the log.'
     );
 
-    process.exitCode = 1;
+    process.exitCode =
+      1;
   } else {
     console.log(
       '\nEverything completed successfully.'
