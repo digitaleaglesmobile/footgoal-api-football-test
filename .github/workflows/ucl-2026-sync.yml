@@ -2,6 +2,8 @@ name: UCL 2026 Production Sync
 
 on:
   workflow_dispatch: {}
+  schedule:
+    - cron: '40 */6 * * *'
 
 concurrency:
   group: ucl-2026-sync
