@@ -1,12 +1,16 @@
 // ============================================================
 // sync-live.js — footgoal.co
-// Lightweight live updater meant to run roughly every minute.
+// Optimized live updater, intended to run roughly every minute.
 //
-// IMPORTANT:
-// - It NEVER re-syncs a whole season while a match is live.
-// - It updates only live / just-finished matches that changed.
-// - It updates standings only when needed (+ 10 min fallback).
-// - Missing CMS fixtures/standings are left to league-sync-v2.js.
+// Strategy:
+// - Never re-sync an entire season during a live match.
+// - Upcoming -> Live and Live -> Played are staged + published ONCE.
+// - Score changes while a match is already Live use Webflow's
+//   direct LIVE CMS endpoint (no separate publish request).
+// - Unchanged scores cause ZERO Webflow writes.
+// - Standings update every 10 minutes while a league has live games,
+//   plus immediately when a match finishes.
+// - Full/static data remains the responsibility of league-sync-v2.js.
 // ============================================================
 
 const WEBFLOW_TOKEN = process.env.WEBFLOW_TOKEN;
@@ -78,6 +82,7 @@ const LEAGUE_BY_API_ID = new Map(
 );
 
 const STALE_LOOKUP_CONCURRENCY = 4;
+const LIVE_ITEM_READ_CONCURRENCY = 6;
 const STANDINGS_FALLBACK_MINUTES = 10;
 
 
@@ -145,35 +150,25 @@ function getChangedFields(existing, desired) {
 
 function standingsFallbackDue() {
   const currentMinute = Math.floor(Date.now() / 60000);
-
   return currentMinute % STANDINGS_FALLBACK_MINUTES === 0;
 }
 
-async function mapWithConcurrency(
-  items,
-  concurrency,
-  callback
-) {
+async function mapWithConcurrency(items, concurrency, callback) {
+  if (!items.length) return;
+
   let index = 0;
 
   async function worker() {
     while (index < items.length) {
       const item = items[index++];
-
       await callback(item);
     }
   }
 
-  const workerCount = Math.min(
-    concurrency,
-    items.length
-  );
+  const workerCount = Math.min(concurrency, items.length);
 
   await Promise.all(
-    Array.from(
-      { length: workerCount },
-      () => worker()
-    )
+    Array.from({ length: workerCount }, () => worker())
   );
 }
 
@@ -182,10 +177,7 @@ async function mapWithConcurrency(
 // API-FOOTBALL
 // ============================================================
 
-async function apiFetch(
-  path,
-  retries = 4
-) {
+async function apiFetch(path, retries = 4) {
   await sleep(100);
 
   const response = await fetch(
@@ -197,20 +189,10 @@ async function apiFetch(
     }
   );
 
-  if (
-    response.status === 429 &&
-    retries > 0
-  ) {
-    console.warn(
-      'API-Football rate limited. Waiting 15s...'
-    );
-
+  if (response.status === 429 && retries > 0) {
+    console.warn('API-Football rate limited. Waiting 15s...');
     await sleep(15000);
-
-    return apiFetch(
-      path,
-      retries - 1
-    );
+    return apiFetch(path, retries - 1);
   }
 
   if (!response.ok) {
@@ -221,117 +203,65 @@ async function apiFetch(
 
   const data = await response.json();
 
-  if (
-    data.errors &&
-    Object.keys(data.errors).length
-  ) {
-    console.warn(
-      'API-Football errors:',
-      data.errors
-    );
+  if (data.errors && Object.keys(data.errors).length) {
+    console.warn('API-Football errors:', data.errors);
   }
 
   return data;
 }
 
 async function getSupportedLiveFixtures() {
-  const data = await apiFetch(
-    '/fixtures?live=all'
-  );
+  const data = await apiFetch('/fixtures?live=all');
 
   return (data.response || []).filter(
     fixture =>
       fixture.league &&
-      LEAGUE_BY_API_ID.has(
-        Number(fixture.league.id)
-      )
+      LEAGUE_BY_API_ID.has(Number(fixture.league.id))
   );
 }
 
-async function getFixtureById(
-  fixtureId
-) {
+async function getFixtureById(fixtureId) {
   const data = await apiFetch(
-    '/fixtures?id=' +
-      encodeURIComponent(
-        String(fixtureId)
-      )
+    '/fixtures?id=' + encodeURIComponent(String(fixtureId))
   );
 
-  if (
-    data.response &&
-    data.response[0]
-  ) {
-    return data.response[0];
-  }
-
-  return null;
+  return data.response && data.response[0]
+    ? data.response[0]
+    : null;
 }
 
 
 // ============================================================
-// WEBFLOW
+// WEBFLOW LOW-LEVEL
 // ============================================================
 
-async function wfFetch(
-  url,
-  options = {},
-  retries = 4
-) {
-  const response = await fetch(
-    url,
-    {
-      ...options,
+async function wfFetch(url, options = {}, retries = 4) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      Authorization: 'Bearer ' + WEBFLOW_TOKEN,
+      accept: 'application/json',
+      ...(options.headers || {}),
+    },
+  });
 
-      headers: {
-        Authorization:
-          'Bearer ' + WEBFLOW_TOKEN,
-
-        accept: 'application/json',
-
-        ...(options.headers || {}),
-      },
-    }
-  );
-
-  if (
-    response.status === 429 &&
-    retries > 0
-  ) {
-    const retryAfter = Number(
-      response.headers.get('retry-after')
-    );
+  if (response.status === 429 && retries > 0) {
+    const retryAfter = Number(response.headers.get('retry-after'));
 
     const delay =
-      Number.isFinite(retryAfter) &&
-      retryAfter > 0
+      Number.isFinite(retryAfter) && retryAfter > 0
         ? retryAfter * 1000
         : 10000;
 
-    console.warn(
-      `Webflow rate limited. Waiting ${delay}ms...`
-    );
-
+    console.warn(`Webflow rate limited. Waiting ${delay}ms...`);
     await sleep(delay);
 
-    return wfFetch(
-      url,
-      options,
-      retries - 1
-    );
+    return wfFetch(url, options, retries - 1);
   }
 
-  if (
-    response.status >= 500 &&
-    retries > 0
-  ) {
+  if (response.status >= 500 && retries > 0) {
     await sleep(2000);
-
-    return wfFetch(
-      url,
-      options,
-      retries - 1
-    );
+    return wfFetch(url, options, retries - 1);
   }
 
   if (!response.ok) {
@@ -347,28 +277,16 @@ async function wfFetch(
   return response.json();
 }
 
-function addFilters(
-  params,
-  filters
-) {
-  for (
-    const [field, operators]
-    of Object.entries(filters || {})
-  ) {
-    for (
-      const [operator, rawValue]
-      of Object.entries(
-        operators || {}
-      )
-    ) {
+function addFilters(params, filters) {
+  for (const [field, operators] of Object.entries(filters || {})) {
+    for (const [operator, rawValue] of Object.entries(operators || {})) {
       if (rawValue == null) {
         continue;
       }
 
-      const value =
-        Array.isArray(rawValue)
-          ? rawValue.join(',')
-          : String(rawValue);
+      const value = Array.isArray(rawValue)
+        ? rawValue.join(',')
+        : String(rawValue);
 
       params.append(
         `filter[${field}][${operator}]`,
@@ -378,49 +296,30 @@ function addFilters(
   }
 }
 
-async function wfListFiltered(
-  collectionId,
-  filters
-) {
+async function wfListFiltered(collectionId, filters) {
   const items = [];
-
   let offset = 0;
 
   while (true) {
-    const params =
-      new URLSearchParams({
-        limit: '100',
-        offset: String(offset),
-      });
+    const params = new URLSearchParams({
+      limit: '100',
+      offset: String(offset),
+    });
 
-    addFilters(
-      params,
-      filters
+    addFilters(params, filters);
+
+    const data = await wfFetch(
+      `https://api.webflow.com/v2/collections/${collectionId}/items?${params.toString()}`
     );
 
-    const data =
-      await wfFetch(
-        `https://api.webflow.com/v2/collections/${collectionId}/items?${params.toString()}`
-      );
+    const pageItems = data.items || [];
+    items.push(...pageItems);
 
-    const pageItems =
-      data.items || [];
+    const total = data.pagination
+      ? Number(data.pagination.total || 0)
+      : items.length;
 
-    items.push(
-      ...pageItems
-    );
-
-    const total =
-      data.pagination
-        ? Number(
-            data.pagination.total || 0
-          )
-        : items.length;
-
-    if (
-      !pageItems.length ||
-      items.length >= total
-    ) {
+    if (!pageItems.length || items.length >= total) {
       break;
     }
 
@@ -430,98 +329,95 @@ async function wfListFiltered(
   return items;
 }
 
-async function wfBulkUpdate(
-  collectionId,
-  updates
-) {
+async function wfGetLiveItem(collectionId, itemId) {
+  return wfFetch(
+    `https://api.webflow.com/v2/collections/${collectionId}/items/${itemId}/live`
+  );
+}
+
+async function wfBulkUpdateStaged(collectionId, updates) {
   if (!updates.length) {
     return;
   }
 
-  for (
-    let i = 0;
-    i < updates.length;
-    i += 100
-  ) {
-    const batch =
-      updates.slice(
-        i,
-        i + 100
-      );
+  for (let i = 0; i < updates.length; i += 100) {
+    const batch = updates.slice(i, i + 100);
 
     await wfFetch(
       `https://api.webflow.com/v2/collections/${collectionId}/items`,
       {
         method: 'PATCH',
-
         headers: {
-          'Content-Type':
-            'application/json',
+          'Content-Type': 'application/json',
         },
-
         body: JSON.stringify({
           items: batch,
         }),
       }
     );
 
-    await sleep(300);
+    await sleep(250);
   }
 }
 
-async function wfPublishItems(
-  collectionId,
-  itemIds
-) {
-  const ids = [
-    ...new Set(
-      itemIds.filter(Boolean)
-    ),
-  ];
+async function wfBulkUpdateLive(collectionId, updates) {
+  if (!updates.length) {
+    return;
+  }
+
+  for (let i = 0; i < updates.length; i += 100) {
+    const batch = updates.slice(i, i + 100);
+
+    await wfFetch(
+      `https://api.webflow.com/v2/collections/${collectionId}/items/live`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          items: batch,
+        }),
+      }
+    );
+
+    await sleep(250);
+  }
+}
+
+async function wfPublishItems(collectionId, itemIds) {
+  const ids = [...new Set(itemIds.filter(Boolean))];
 
   if (!ids.length) {
     return;
   }
 
-  for (
-    let i = 0;
-    i < ids.length;
-    i += 100
-  ) {
-    const batch =
-      ids.slice(
-        i,
-        i + 100
-      );
+  for (let i = 0; i < ids.length; i += 100) {
+    const batch = ids.slice(i, i + 100);
 
     await wfFetch(
       `https://api.webflow.com/v2/collections/${collectionId}/items/publish`,
       {
         method: 'POST',
-
         headers: {
-          'Content-Type':
-            'application/json',
+          'Content-Type': 'application/json',
         },
-
         body: JSON.stringify({
           itemIds: batch,
         }),
       }
     );
 
-    await sleep(300);
+    await sleep(250);
   }
 }
 
 
 // ============================================================
-// FETCH RELEVANT CMS MATCHES ONLY
+// WEBFLOW MATCH LOOKUPS
 // ============================================================
 
-async function getCmsMatchesByFixtureIds(
-  fixtureIds
-) {
+async function getCmsMatchesByFixtureIds(fixtureIds) {
   const ids = [
     ...new Set(
       fixtureIds
@@ -536,36 +432,23 @@ async function getCmsMatchesByFixtureIds(
 
   const items = [];
 
-  for (
-    let i = 0;
-    i < ids.length;
-    i += 100
-  ) {
-    const batch =
-      ids.slice(
-        i,
-        i + 100
-      );
-
-    const result =
-      await wfListFiltered(
-        WF.MATCHES,
-        {
-          'api-fixture-id': {
-            in: batch,
-          },
-        }
-      );
-
-    items.push(
-      ...result
+  for (let i = 0; i < ids.length; i += 100) {
+    const result = await wfListFiltered(
+      WF.MATCHES,
+      {
+        'api-fixture-id': {
+          in: ids.slice(i, i + 100),
+        },
+      }
     );
+
+    items.push(...result);
   }
 
   return items;
 }
 
-async function getCmsLiveMatches() {
+async function getCmsMatchesMarkedLive() {
   return wfListFiltered(
     WF.MATCHES,
     {
@@ -581,62 +464,35 @@ async function getCmsLiveMatches() {
 // MATCH SYNC
 // ============================================================
 
-function desiredMatchFields(
-  fixture
-) {
+function desiredMatchFields(fixture) {
   return {
-    'home-score':
-      fixture.goals
-        ? fixture.goals.home
-        : null,
+    'home-score': fixture.goals
+      ? fixture.goals.home
+      : null,
 
-    'away-score':
-      fixture.goals
-        ? fixture.goals.away
-        : null,
+    'away-score': fixture.goals
+      ? fixture.goals.away
+      : null,
 
-    status:
-      mapMatchStatus(
-        fixture.fixture
-          ?.status
-          ?.short || ''
-      ),
+    status: mapMatchStatus(
+      fixture.fixture?.status?.short || ''
+    ),
   };
 }
 
-async function syncMatches(
-  liveFixtures
-) {
-  const liveIds =
-    liveFixtures.map(
-      fixture =>
-        String(
-          fixture.fixture.id
-        )
-    );
+async function syncMatches(liveFixtures) {
+  const liveIds = liveFixtures.map(
+    fixture => String(fixture.fixture.id)
+  );
 
-  const liveIdSet =
-    new Set(liveIds);
+  const liveIdSet = new Set(liveIds);
 
-  /*
-   * Only get CMS matches that
-   * correspond to current live fixtures.
-   */
-  const currentCmsMatches =
-    await getCmsMatchesByFixtureIds(
-      liveIds
-    );
+  const currentCmsMatches = await getCmsMatchesByFixtureIds(liveIds);
 
-  const cmsByFixtureId =
-    new Map();
+  const cmsByFixtureId = new Map();
 
-  for (
-    const item
-    of currentCmsMatches
-  ) {
-    const fixtureId =
-      item.fieldData
-        ?.['api-fixture-id'];
+  for (const item of currentCmsMatches) {
+    const fixtureId = item.fieldData?.['api-fixture-id'];
 
     if (fixtureId != null) {
       cmsByFixtureId.set(
@@ -646,154 +502,87 @@ async function syncMatches(
     }
   }
 
-  /*
-   * Also get matches that Webflow
-   * currently thinks are Live.
-   *
-   * This is needed so when a match
-   * becomes FT it doesn't stay stuck
-   * as Live forever.
-   */
-  const cmsMarkedLive =
-    await getCmsLiveMatches();
+  const cmsMarkedLive = await getCmsMatchesMarkedLive();
 
-  const updates =
-    new Map();
-
-  const affectedLeagueIds =
-    new Set();
-
+  const stagedTransitionUpdates = new Map();
+  const directLiveUpdates = new Map();
+  const finishedLeagueIds = new Set();
 
   // ----------------------------------------------------------
-  // CURRENT LIVE MATCHES
+  // CURRENTLY LIVE MATCHES
   // ----------------------------------------------------------
 
-  for (
-    const fixture
-    of liveFixtures
-  ) {
-    const fixtureId =
-      String(
-        fixture.fixture.id
-      );
+  const alreadyLivePairs = [];
 
-    const cmsItem =
-      cmsByFixtureId.get(
-        fixtureId
-      );
+  for (const fixture of liveFixtures) {
+    const fixtureId = String(fixture.fixture.id);
+    const cmsItem = cmsByFixtureId.get(fixtureId);
 
     if (!cmsItem) {
       console.warn(
         `[MATCH] ${fixtureId} not found in Webflow CMS. Full sync will handle it.`
       );
+      continue;
+    }
+
+    const desired = desiredMatchFields(fixture);
+    const stagedStatus = cmsItem.fieldData?.status;
+
+    if (stagedStatus !== 'Live') {
+      const diff = getChangedFields(
+        cmsItem.fieldData,
+        desired
+      );
+
+      if (Object.keys(diff).length) {
+        stagedTransitionUpdates.set(
+          cmsItem.id,
+          {
+            id: cmsItem.id,
+            fieldData: diff,
+          }
+        );
+
+        console.log(
+          `[KICKOFF] ${cmsItem.fieldData?.name || fixtureId}`,
+          diff
+        );
+      }
 
       continue;
     }
 
-    const diff =
-      getChangedFields(
-        cmsItem.fieldData,
-        desiredMatchFields(
-          fixture
-        )
-      );
-
-    if (
-      Object.keys(diff).length
-    ) {
-      updates.set(
-        cmsItem.id,
-        {
-          id: cmsItem.id,
-          fieldData: diff,
-        }
-      );
-
-      affectedLeagueIds.add(
-        Number(
-          fixture.league.id
-        )
-      );
-
-      console.log(
-        `[MATCH] ${cmsItem.fieldData.name || fixtureId}`,
-        diff
-      );
-    }
+    alreadyLivePairs.push({
+      fixture,
+      cmsItem,
+    });
   }
 
-
   // ----------------------------------------------------------
-  // LIVE -> FT / AET / PEN TRANSITIONS
+  // ALREADY LIVE MATCHES
   // ----------------------------------------------------------
-
-  const staleLiveItems =
-    cmsMarkedLive.filter(
-      item => {
-        const fixtureId =
-          item.fieldData
-            ?.['api-fixture-id'];
-
-        return (
-          fixtureId != null &&
-          !liveIdSet.has(
-            String(fixtureId)
-          )
-        );
-      }
-    );
 
   await mapWithConcurrency(
-    staleLiveItems,
-    STALE_LOOKUP_CONCURRENCY,
-
-    async cmsItem => {
-      const fixtureId =
-        cmsItem.fieldData[
-          'api-fixture-id'
-        ];
+    alreadyLivePairs,
+    LIVE_ITEM_READ_CONCURRENCY,
+    async ({ fixture, cmsItem }) => {
+      const fixtureId = String(fixture.fixture.id);
 
       try {
-        /*
-         * The match disappeared from
-         * /fixtures?live=all.
-         *
-         * Fetch ONLY this fixture,
-         * not the entire league season.
-         */
-        const fixture =
-          await getFixtureById(
-            fixtureId
-          );
+        const liveItem = await wfGetLiveItem(
+          WF.MATCHES,
+          cmsItem.id
+        );
 
-        if (!fixture) {
-          return;
-        }
+        const desired = desiredMatchFields(fixture);
 
-        if (
-          !LEAGUE_BY_API_ID.has(
-            Number(
-              fixture.league
-                ?.id
-            )
-          )
-        ) {
-          return;
-        }
+        const diff = getChangedFields(
+          liveItem?.fieldData || {},
+          desired
+        );
 
-        const diff =
-          getChangedFields(
-            cmsItem.fieldData,
-            desiredMatchFields(
-              fixture
-            )
-          );
-
-        if (
-          Object.keys(diff)
-            .length
-        ) {
-          updates.set(
+        if (Object.keys(diff).length) {
+          directLiveUpdates.set(
             cmsItem.id,
             {
               id: cmsItem.id,
@@ -801,61 +590,144 @@ async function syncMatches(
             }
           );
 
-          affectedLeagueIds.add(
-            Number(
-              fixture.league.id
-            )
-          );
-
           console.log(
-            `[MATCH TRANSITION] ${cmsItem.fieldData.name || fixtureId}`,
+            `[LIVE CHANGE] ${cmsItem.fieldData?.name || fixtureId}`,
             diff
           );
         }
       } catch (error) {
         console.error(
-          `[MATCH TRANSITION] ${fixtureId}: ${error.message}`
+          `[LIVE READ] ${fixtureId}: ${error.message}`
         );
       }
     }
   );
 
+  // ----------------------------------------------------------
+  // LIVE -> FINISHED / NON-LIVE
+  // ----------------------------------------------------------
+
+  const staleLiveItems = cmsMarkedLive.filter(
+    item => {
+      const fixtureId = item.fieldData?.['api-fixture-id'];
+
+      return (
+        fixtureId != null &&
+        !liveIdSet.has(String(fixtureId))
+      );
+    }
+  );
+
+  await mapWithConcurrency(
+    staleLiveItems,
+    STALE_LOOKUP_CONCURRENCY,
+    async cmsItem => {
+      const fixtureId = cmsItem.fieldData?.['api-fixture-id'];
+
+      try {
+        const fixture = await getFixtureById(fixtureId);
+
+        if (!fixture) {
+          return;
+        }
+
+        const apiLeagueId = Number(
+          fixture.league?.id
+        );
+
+        if (!LEAGUE_BY_API_ID.has(apiLeagueId)) {
+          return;
+        }
+
+        const desired = desiredMatchFields(fixture);
+
+        if (desired.status === 'Live') {
+          return;
+        }
+
+        const diff = getChangedFields(
+          cmsItem.fieldData,
+          desired
+        );
+
+        if (Object.keys(diff).length) {
+          stagedTransitionUpdates.set(
+            cmsItem.id,
+            {
+              id: cmsItem.id,
+              fieldData: diff,
+            }
+          );
+
+          console.log(
+            `[LIVE EXIT] ${cmsItem.fieldData?.name || fixtureId}`,
+            diff
+          );
+        }
+
+        if (desired.status === 'Played') {
+          finishedLeagueIds.add(apiLeagueId);
+        }
+      } catch (error) {
+        console.error(
+          `[LIVE EXIT] ${fixtureId}: ${error.message}`
+        );
+      }
+    }
+  );
 
   // ----------------------------------------------------------
-  // WRITE ONLY IF SOMETHING CHANGED
+  // WRITE STATUS TRANSITIONS
   // ----------------------------------------------------------
 
-  const updateList = [
-    ...updates.values(),
+  const stagedList = [
+    ...stagedTransitionUpdates.values(),
   ];
 
-  if (
-    !updateList.length
-  ) {
-    console.log(
-      '[MATCHES] No score/status changes. No Webflow writes.'
+  if (stagedList.length) {
+    await wfBulkUpdateStaged(
+      WF.MATCHES,
+      stagedList
     );
 
-    return affectedLeagueIds;
+    await wfPublishItems(
+      WF.MATCHES,
+      stagedList.map(item => item.id)
+    );
+
+    console.log(
+      `[MATCHES] Published ${stagedList.length} status transition(s).`
+    );
   }
 
-  await wfBulkUpdate(
-    WF.MATCHES,
-    updateList
-  );
+  // ----------------------------------------------------------
+  // WRITE SCORE CHANGES DIRECTLY TO LIVE CMS
+  // ----------------------------------------------------------
 
-  await wfPublishItems(
-    WF.MATCHES,
-    updateList.map(
-      item => item.id
-    )
-  );
+  const liveList = [
+    ...directLiveUpdates.values(),
+  ];
 
-  console.log(
-    `[MATCHES] Updated ${updateList.length} changed CMS match item(s).`
-  );
+  if (liveList.length) {
+    await wfBulkUpdateLive(
+      WF.MATCHES,
+      liveList
+    );
 
-  return affectedLeagueIds;
+    console.log(
+      `[MATCHES] Direct-live updated ${liveList.length} changed match(es).`
+    );
+  }
+
+  if (!stagedList.length && !liveList.length) {
+    console.log(
+      '[MATCHES] No score/status changes. ZERO Webflow writes.'
+    );
+  }
+
+  return {
+    finishedLeagueIds,
+  };
 }
 
 
@@ -863,9 +735,7 @@ async function syncMatches(
 // STANDINGS
 // ============================================================
 
-async function getTeamsByApiIds(
-  apiIds
-) {
+async function getTeamsByApiIds(apiIds) {
   const ids = [
     ...new Set(
       apiIds.map(String)
@@ -874,42 +744,23 @@ async function getTeamsByApiIds(
 
   const teams = [];
 
-  for (
-    let i = 0;
-    i < ids.length;
-    i += 100
-  ) {
-    const batch =
-      ids.slice(
-        i,
-        i + 100
-      );
-
-    const result =
-      await wfListFiltered(
-        WF.TEAMS,
-        {
-          'api-team-id': {
-            in: batch,
-          },
-        }
-      );
-
-    teams.push(
-      ...result
+  for (let i = 0; i < ids.length; i += 100) {
+    const result = await wfListFiltered(
+      WF.TEAMS,
+      {
+        'api-team-id': {
+          in: ids.slice(i, i + 100),
+        },
+      }
     );
+
+    teams.push(...result);
   }
 
-  const map =
-    new Map();
+  const map = new Map();
 
-  for (
-    const team
-    of teams
-  ) {
-    const apiId =
-      team.fieldData
-        ?.['api-team-id'];
+  for (const team of teams) {
+    const apiId = team.fieldData?.['api-team-id'];
 
     if (apiId != null) {
       map.set(
@@ -922,70 +773,42 @@ async function getTeamsByApiIds(
   return map;
 }
 
-async function syncStandingsForLeague(
-  league
-) {
+async function syncStandingsForLeague(league) {
   console.log(
     `[STANDINGS] Checking ${league.name}`
   );
 
-  const data =
-    await apiFetch(
-      `/standings?league=${league.api_id}&season=${league.season}`
-    );
+  const data = await apiFetch(
+    `/standings?league=${league.api_id}&season=${league.season}`
+  );
 
   const table =
-    data.response
-      ?.[0]
-      ?.league
-      ?.standings
-      ?.[0] || [];
+    data.response?.[0]?.league?.standings?.[0] || [];
 
   if (!table.length) {
     console.log(
       `[STANDINGS] ${league.name}: no table yet.`
     );
-
     return;
   }
 
-  /*
-   * Fetch ONLY the teams
-   * present in this standings table.
-   */
-  const teamByApiId =
-    await getTeamsByApiIds(
-      table.map(
-        row =>
-          row.team.id
-      )
-    );
+  const teamByApiId = await getTeamsByApiIds(
+    table.map(row => row.team.id)
+  );
 
-  /*
-   * Fetch ONLY standings
-   * belonging to this league.
-   */
-  const cmsStandings =
-    await wfListFiltered(
-      WF.STANDINGS,
-      {
-        league: {
-          eq:
-            league.webflow_id,
-        },
-      }
-    );
+  const cmsStandings = await wfListFiltered(
+    WF.STANDINGS,
+    {
+      league: {
+        eq: league.webflow_id,
+      },
+    }
+  );
 
-  const standingByTeamRef =
-    new Map();
+  const standingByTeamRef = new Map();
 
-  for (
-    const item
-    of cmsStandings
-  ) {
-    const teamRef =
-      item.fieldData
-        ?.team;
+  for (const item of cmsStandings) {
+    const teamRef = item.fieldData?.team;
 
     if (teamRef) {
       standingByTeamRef.set(
@@ -997,82 +820,45 @@ async function syncStandingsForLeague(
 
   const updates = [];
 
-  for (
-    const row
-    of table
-  ) {
-    const wfTeam =
-      teamByApiId.get(
-        String(
-          row.team.id
-        )
-      );
+  for (const row of table) {
+    const wfTeam = teamByApiId.get(
+      String(row.team.id)
+    );
 
     if (!wfTeam) {
       continue;
     }
 
-    const cmsStanding =
-      standingByTeamRef.get(
-        String(
-          wfTeam.id
-        )
-      );
+    const cmsStanding = standingByTeamRef.get(
+      String(wfTeam.id)
+    );
 
     if (!cmsStanding) {
       continue;
     }
 
     const desired = {
-      position:
-        row.rank,
-
-      played:
-        row.all.played,
-
-      won:
-        row.all.win,
-
-      drawn:
-        row.all.draw,
-
-      lost:
-        row.all.lose,
-
-      'goals-for':
-        row.all.goals.for,
-
-      'goals-against':
-        row.all.goals.against,
-
-      'goal-difference':
-        row.goalsDiff,
-
-      points:
-        row.points,
-
-      form:
-        getFormString(
-          row.form
-        ),
+      position: row.rank,
+      played: row.all.played,
+      won: row.all.win,
+      drawn: row.all.draw,
+      lost: row.all.lose,
+      'goals-for': row.all.goals.for,
+      'goals-against': row.all.goals.against,
+      'goal-difference': row.goalsDiff,
+      points: row.points,
+      form: getFormString(row.form),
     };
 
-    const diff =
-      getChangedFields(
-        cmsStanding.fieldData,
-        desired
-      );
+    const diff = getChangedFields(
+      cmsStanding.fieldData,
+      desired
+    );
 
-    if (
-      Object.keys(diff)
-        .length
-    ) {
+    if (Object.keys(diff).length) {
       updates.push({
-        id:
-          cmsStanding.id,
-
-        fieldData:
-          diff,
+        id: cmsStanding.id,
+        fieldData: diff,
       });
     }
   }
@@ -1081,20 +867,17 @@ async function syncStandingsForLeague(
     console.log(
       `[STANDINGS] ${league.name}: no changes.`
     );
-
     return;
   }
 
-  await wfBulkUpdate(
+  await wfBulkUpdateStaged(
     WF.STANDINGS,
     updates
   );
 
   await wfPublishItems(
     WF.STANDINGS,
-    updates.map(
-      item => item.id
-    )
+    updates.map(item => item.id)
   );
 
   console.log(
@@ -1104,31 +887,16 @@ async function syncStandingsForLeague(
 
 async function syncRelevantStandings(
   liveFixtures,
-  affectedLeagueIds
+  finishedLeagueIds
 ) {
-  const leagueIds =
-    new Set(
-      affectedLeagueIds
-    );
+  const leagueIds = new Set(
+    finishedLeagueIds
+  );
 
-  /*
-   * Normally standings update only
-   * when a match score/status changed.
-   *
-   * Every 10 min during live matches,
-   * refresh anyway as a safety net.
-   */
-  if (
-    standingsFallbackDue()
-  ) {
-    for (
-      const fixture
-      of liveFixtures
-    ) {
+  if (standingsFallbackDue()) {
+    for (const fixture of liveFixtures) {
       leagueIds.add(
-        Number(
-          fixture.league.id
-        )
+        Number(fixture.league.id)
       );
     }
   }
@@ -1137,27 +905,20 @@ async function syncRelevantStandings(
     console.log(
       '[STANDINGS] Nothing to refresh this tick.'
     );
-
     return;
   }
 
-  for (
-    const leagueId
-    of leagueIds
-  ) {
-    const league =
-      LEAGUE_BY_API_ID.get(
-        Number(leagueId)
-      );
+  for (const leagueId of leagueIds) {
+    const league = LEAGUE_BY_API_ID.get(
+      Number(leagueId)
+    );
 
     if (!league) {
       continue;
     }
 
     try {
-      await syncStandingsForLeague(
-        league
-      );
+      await syncStandingsForLeague(league);
     } catch (error) {
       console.error(
         `[STANDINGS] ${league.name}: ${error.message}`
@@ -1172,47 +933,25 @@ async function syncRelevantStandings(
 // ============================================================
 
 async function main() {
-  const started =
-    Date.now();
+  const started = Date.now();
 
   console.log(
     `sync-live.js tick @ ${new Date().toISOString()}`
   );
 
-  /*
-   * ONE API call tells us
-   * every live match right now.
-   */
-  const liveFixtures =
-    await getSupportedLiveFixtures();
+  const liveFixtures = await getSupportedLiveFixtures();
 
-  if (
-    liveFixtures.length
-  ) {
+  if (liveFixtures.length) {
     console.log(
       `[LIVE] ${liveFixtures.length} supported live match(es):`
     );
 
-    for (
-      const fixture
-      of liveFixtures
-    ) {
+    for (const fixture of liveFixtures) {
       console.log(
-        `  ${
-          fixture.teams
-            ?.home
-            ?.name || '?'
-        } ${
-          fixture.goals
-            ?.home ?? '-'
-        }-${
-          fixture.goals
-            ?.away ?? '-'
-        } ${
-          fixture.teams
-            ?.away
-            ?.name || '?'
-        }`
+        `  ${fixture.teams?.home?.name || '?'} ` +
+        `${fixture.goals?.home ?? '-'}-` +
+        `${fixture.goals?.away ?? '-'} ` +
+        `${fixture.teams?.away?.name || '?'}`
       );
     }
   } else {
@@ -1221,44 +960,27 @@ async function main() {
     );
   }
 
-  /*
-   * Only affected live matches
-   * get written to Webflow.
-   */
-  const affectedLeagueIds =
-    await syncMatches(
-      liveFixtures
-    );
+  const {
+    finishedLeagueIds,
+  } = await syncMatches(liveFixtures);
 
-  /*
-   * Standings refresh only
-   * for affected leagues.
-   */
   await syncRelevantStandings(
     liveFixtures,
-    affectedLeagueIds
+    finishedLeagueIds
   );
 
   console.log(
-    `sync-live.js finished in ${
-      (
-        (
-          Date.now() -
-          started
-        ) /
-        1000
-      ).toFixed(1)
-    }s.`
+    `sync-live.js finished in ${(
+      (Date.now() - started) / 1000
+    ).toFixed(1)}s.`
   );
 }
 
-main().catch(
-  error => {
-    console.error(
-      'Fatal error:',
-      error
-    );
+main().catch(error => {
+  console.error(
+    'Fatal error:',
+    error
+  );
 
-    process.exit(1);
-  }
-);
+  process.exit(1);
+});
