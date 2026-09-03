@@ -75,6 +75,13 @@ const LEAGUES = [
     webflow_id: '6a32a9cb63396a5393212f48',
     season: 2026,
   },
+  {
+    code: 'UCL',
+    name: 'UEFA Champions League',
+    api_id: 2,
+    webflow_id: '6a32a9cb63396a5393212f3c',
+    season: 2026,
+  },
 ];
 
 const LEAGUE_BY_API_ID = new Map(
