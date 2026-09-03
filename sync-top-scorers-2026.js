@@ -1,7 +1,7 @@
 // ============================================================
 // sync-top-scorers-2026.js — footgoal.co
 //
-// LIVE Top Scorers sync for ALL 7 leagues.
+// LIVE Top Scorers sync for ALL 8 leagues.
 //
 // SAFETY:
 // Nothing is written unless CONFIRM=yes.
@@ -94,6 +94,13 @@ const LEAGUES = [
     name: 'Brasileiro Série A',
     api_id: 71,
     webflow_id: '6a32a9cb63396a5393212f48',
+    season: 2026
+  },
+  {
+    code: 'UCL',
+    name: 'UEFA Champions League',
+    api_id: 2,
+    webflow_id: '6a32a9cb63396a5393212f3c',
     season: 2026
   }
 ];
@@ -248,7 +255,6 @@ async function apiFetch(path, retries = 3) {
     }
   );
 
-
   if (
     res.status === 429 &&
     retries > 0
@@ -265,7 +271,6 @@ async function apiFetch(path, retries = 3) {
     );
   }
 
-
   if (!res.ok) {
     throw new Error(
       'API-Football ' +
@@ -275,9 +280,7 @@ async function apiFetch(path, retries = 3) {
     );
   }
 
-
   const data = await res.json();
-
 
   if (
     data.errors &&
@@ -288,7 +291,6 @@ async function apiFetch(path, retries = 3) {
       JSON.stringify(data.errors)
     );
   }
-
 
   return data;
 }
@@ -308,7 +310,6 @@ async function wfRequest(
     options
   );
 
-
   if (
     res.status === 429 &&
     retries > 0
@@ -326,7 +327,6 @@ async function wfRequest(
     );
   }
 
-
   if (!res.ok) {
     throw new Error(
       'Webflow ' +
@@ -336,18 +336,15 @@ async function wfRequest(
     );
   }
 
-
   if (res.status === 204) {
     return null;
   }
-
 
   const text = await res.text();
 
   if (!text) {
     return null;
   }
-
 
   try {
     return JSON.parse(text);
@@ -365,9 +362,7 @@ async function wfGetAllItems(collectionId) {
   const items = [];
 
   let offset = 0;
-
   const limit = 100;
-
 
   while (true) {
     const data = await wfRequest(
@@ -388,17 +383,14 @@ async function wfGetAllItems(collectionId) {
       }
     );
 
-
     items.push(
       ...(data.items || [])
     );
-
 
     const total =
       data.pagination
         ? data.pagination.total
         : items.length;
-
 
     if (
       items.length >= total
@@ -406,10 +398,8 @@ async function wfGetAllItems(collectionId) {
       break;
     }
 
-
     offset += limit;
   }
-
 
   return items;
 }
@@ -500,7 +490,6 @@ async function wfPublishItems(
     return;
   }
 
-
   for (
     let i = 0;
     i < uniqueIds.length;
@@ -511,7 +500,6 @@ async function wfPublishItems(
         i,
         i + 100
       );
-
 
     await wfRequest(
       'https://api.webflow.com/v2/collections/' +
@@ -537,7 +525,6 @@ async function wfPublishItems(
       }
     );
 
-
     await sleep(500);
   }
 }
@@ -558,7 +545,6 @@ async function wfUnpublishItems(
     return;
   }
 
-
   for (
     let i = 0;
     i < uniqueIds.length;
@@ -569,7 +555,6 @@ async function wfUnpublishItems(
         i,
         i + 100
       );
-
 
     await wfRequest(
       'https://api.webflow.com/v2/collections/' +
@@ -597,7 +582,6 @@ async function wfUnpublishItems(
       }
     );
 
-
     await sleep(500);
   }
 }
@@ -610,7 +594,6 @@ async function wfUnpublishItems(
 function buildTeamLookup(allTeams) {
   const byApiId = new Map();
   const byName = new Map();
-
 
   for (const team of allTeams) {
     const apiId =
@@ -625,14 +608,12 @@ function buildTeamLookup(allTeams) {
         'name'
       );
 
-
     if (apiId) {
       byApiId.set(
         String(apiId),
         team
       );
     }
-
 
     if (name) {
       const normalized =
@@ -653,7 +634,6 @@ function buildTeamLookup(allTeams) {
     }
   }
 
-
   return {
     byApiId,
     byName
@@ -669,14 +649,12 @@ function resolveTeam(
     return null;
   }
 
-
   const idMatch =
     teamLookup
       .byApiId
       .get(
         String(apiTeam.id)
       );
-
 
   if (idMatch) {
     return {
@@ -685,18 +663,15 @@ function resolveTeam(
     };
   }
 
-
   const normalized =
     normalizeName(
       apiTeam.name
     );
 
-
   const exact =
     teamLookup
       .byName
       .get(normalized) || [];
-
 
   if (
     exact.length === 1
@@ -706,7 +681,6 @@ function resolveTeam(
       method: 'exact-name'
     };
   }
-
 
   return null;
 }
@@ -723,7 +697,6 @@ function buildExistingLookup(items) {
   const byExactName =
     new Map();
 
-
   for (const item of items) {
     const apiId =
       getField(
@@ -736,7 +709,6 @@ function buildExistingLookup(items) {
         item,
         'name'
       );
-
 
     if (apiId) {
       const key =
@@ -755,7 +727,6 @@ function buildExistingLookup(items) {
         .get(key)
         .push(item);
     }
-
 
     if (name) {
       const normalized =
@@ -777,7 +748,6 @@ function buildExistingLookup(items) {
         .push(item);
     }
   }
-
 
   return {
     byApiPlayerId,
@@ -808,7 +778,6 @@ function scoreExistingCandidate(
   const possibleNames =
     getPossibleExactNames(player);
 
-
   if (
     possibleNames.includes(
       existingName
@@ -816,7 +785,6 @@ function scoreExistingCandidate(
   ) {
     score += 100;
   }
-
 
   if (
     String(
@@ -829,16 +797,13 @@ function scoreExistingCandidate(
     score += 20;
   }
 
-
   if (!item.isDraft) {
     score += 10;
   }
 
-
   if (!item.isArchived) {
     score += 5;
   }
-
 
   return score;
 }
@@ -858,11 +823,9 @@ function pickBestCandidate(
         )
     );
 
-
   if (!available.length) {
     return null;
   }
-
 
   return [...available].sort(
     (a, b) =>
@@ -895,7 +858,6 @@ function findExactNameCandidates(
   const names =
     getPossibleExactNames(player);
 
-
   for (
     const normalizedName
     of names
@@ -906,7 +868,6 @@ function findExactNameCandidates(
         .get(
           normalizedName
         ) || [];
-
 
     for (
       const item
@@ -925,7 +886,6 @@ function findExactNameCandidates(
       result.push(item);
     }
   }
-
 
   return result;
 }
@@ -949,7 +909,6 @@ function buildCurrentFieldData({
       existingItem
     );
 
-
   const goals =
     stats.goals &&
     stats.goals.total != null
@@ -958,7 +917,6 @@ function buildCurrentFieldData({
         )
       : 0;
 
-
   const assists =
     stats.goals &&
     stats.goals.assists != null
@@ -966,7 +924,6 @@ function buildCurrentFieldData({
           stats.goals.assists
         )
       : 0;
-
 
   const fieldData = {
     name:
@@ -996,7 +953,6 @@ function buildCurrentFieldData({
     rank
   };
 
-
   const photoUrl =
     player.photo ||
     (
@@ -1007,13 +963,11 @@ function buildCurrentFieldData({
         : null
     );
 
-
   if (photoUrl) {
     fieldData.photo = {
       url: photoUrl
     };
   }
-
 
   return fieldData;
 }
@@ -1033,7 +987,6 @@ async function main() {
     );
   }
 
-
   if (!CONFIRM) {
     console.log(
       'SAFETY STOP: nothing was written.'
@@ -1046,7 +999,6 @@ async function main() {
     return;
   }
 
-
   console.log(
     '============================================================'
   );
@@ -1056,53 +1008,45 @@ async function main() {
   );
 
   console.log(
-    'ALL 7 LEAGUES'
+    'ALL 8 LEAGUES'
   );
 
   console.log(
     '============================================================\n'
   );
 
-
   console.log(
     'Loading Webflow Top Scorers...'
   );
-
 
   const allScorers =
     await wfGetAllItems(
       TOP_SCORERS_COLLECTION_ID
     );
 
-
   console.log(
     'Top Scorers CMS items: ' +
     allScorers.length
   );
 
-
   console.log(
     '\nLoading Webflow Teams...'
   );
-
 
   const allTeams =
     await wfGetAllItems(
       TEAMS_COLLECTION_ID
     );
 
-
   console.log(
     'Teams CMS items: ' +
     allTeams.length
   );
 
-
   const teamLookup =
     buildTeamLookup(
       allTeams
     );
-
 
   let totalUpdated = 0;
   let totalCreated = 0;
@@ -1130,7 +1074,6 @@ async function main() {
       '============================================================'
     );
 
-
     const leagueItems =
       allScorers.filter(
         item =>
@@ -1141,26 +1084,21 @@ async function main() {
           league.webflow_id
       );
 
-
     console.log(
       'Existing CMS scorer items: ' +
       leagueItems.length
     );
-
 
     const existingLookup =
       buildExistingLookup(
         leagueItems
       );
 
-
     console.log(
       'Fetching current API Top Scorers...'
     );
 
-
     let apiData;
-
 
     try {
       apiData =
@@ -1181,17 +1119,14 @@ async function main() {
       continue;
     }
 
-
     const apiList =
       apiData.response || [];
-
 
     const currentTop =
       apiList.slice(
         0,
         TARGET_TOP_N
       );
-
 
     console.log(
       'API scorers returned: ' +
@@ -1203,14 +1138,12 @@ async function main() {
       currentTop.length
     );
 
-
     if (
       currentTop.length === 0
     ) {
       console.log(
         'No 2026 scorer data yet.'
       );
-
 
       const liveOldIds =
         leagueItems
@@ -1222,7 +1155,6 @@ async function main() {
             item => item.id
           );
 
-
       if (!liveOldIds.length) {
         console.log(
           'No live stale scorer items to unpublish.'
@@ -1231,13 +1163,11 @@ async function main() {
         continue;
       }
 
-
       console.log(
         'Unpublishing ' +
         liveOldIds.length +
         ' stale scorer item(s)...'
       );
-
 
       try {
         await wfUnpublishItems(
@@ -1260,10 +1190,8 @@ async function main() {
         );
       }
 
-
       continue;
     }
-
 
     const matchedCmsIds =
       new Set();
@@ -1281,10 +1209,8 @@ async function main() {
       const apiEntry =
         currentTop[index];
 
-
       const player =
         apiEntry.player;
-
 
       const stats =
         apiEntry.statistics &&
@@ -1292,16 +1218,13 @@ async function main() {
           ? apiEntry.statistics[0]
           : {};
 
-
       const rank =
         index + 1;
-
 
       const apiPlayerId =
         String(
           player.id
         );
-
 
       console.log(
         '\n----------------------------------------'
@@ -1317,13 +1240,11 @@ async function main() {
         )
       );
 
-
       const teamMatch =
         resolveTeam(
           stats.team || null,
           teamLookup
         );
-
 
       if (!teamMatch) {
         totalErrors++;
@@ -1343,14 +1264,12 @@ async function main() {
         continue;
       }
 
-
       const idCandidates =
         existingLookup
           .byApiPlayerId
           .get(
             apiPlayerId
           ) || [];
-
 
       let existingItem =
         pickBestCandidate(
@@ -1360,12 +1279,10 @@ async function main() {
           matchedCmsIds
         );
 
-
       let matchMethod =
         existingItem
           ? 'api-player-id'
           : null;
-
 
       if (!existingItem) {
         const exactCandidates =
@@ -1374,7 +1291,6 @@ async function main() {
             existingLookup,
             matchedCmsIds
           );
-
 
         if (
           exactCandidates.length === 1
@@ -1385,7 +1301,6 @@ async function main() {
           matchMethod =
             'exact-name';
         }
-
 
         if (
           exactCandidates.length > 1
@@ -1400,12 +1315,10 @@ async function main() {
         }
       }
 
-
       if (existingItem) {
         matchedCmsIds.add(
           existingItem.id
         );
-
 
         const fieldData =
           buildCurrentFieldData({
@@ -1416,7 +1329,6 @@ async function main() {
             teamMatch,
             existingItem
           });
-
 
         console.log(
           'Match: ' +
@@ -1450,7 +1362,6 @@ async function main() {
           teamMatch.item.fieldData.name
         );
 
-
         try {
           await wfUpdateItem(
             TOP_SCORERS_COLLECTION_ID,
@@ -1458,11 +1369,9 @@ async function main() {
             fieldData
           );
 
-
           publishIds.push(
             existingItem.id
           );
-
 
           if (
             matchMethod ===
@@ -1472,7 +1381,6 @@ async function main() {
           } else {
             totalUpdated++;
           }
-
 
           console.log(
             'UPDATED OK'
@@ -1487,12 +1395,10 @@ async function main() {
           );
         }
 
-
         await sleep(300);
 
         continue;
       }
-
 
       const fieldData =
         buildCurrentFieldData({
@@ -1504,7 +1410,6 @@ async function main() {
           existingItem: null
         });
 
-
       fieldData.slug =
         slugify(
           fieldData.name
@@ -1515,7 +1420,6 @@ async function main() {
         league.season +
         '-' +
         apiPlayerId;
-
 
       console.log(
         'No safe existing match.'
@@ -1538,14 +1442,12 @@ async function main() {
         teamMatch.item.fieldData.name
       );
 
-
       try {
         const created =
           await wfCreateItem(
             TOP_SCORERS_COLLECTION_ID,
             fieldData
           );
-
 
         if (
           !created ||
@@ -1556,19 +1458,15 @@ async function main() {
           );
         }
 
-
         matchedCmsIds.add(
           created.id
         );
-
 
         publishIds.push(
           created.id
         );
 
-
         totalCreated++;
-
 
         console.log(
           'CREATED OK'
@@ -1583,7 +1481,6 @@ async function main() {
         );
       }
 
-
       await sleep(300);
     }
 
@@ -1595,17 +1492,14 @@ async function main() {
         ' current scorer item(s)...'
       );
 
-
       try {
         await wfPublishItems(
           TOP_SCORERS_COLLECTION_ID,
           publishIds
         );
 
-
         totalRepublished +=
           publishIds.length;
-
 
         console.log(
           'Current Top Scorers published.'
@@ -1634,7 +1528,6 @@ async function main() {
       continue;
     }
 
-
     const staleItems =
       leagueItems.filter(
         item =>
@@ -1643,19 +1536,16 @@ async function main() {
           )
       );
 
-
     const liveStaleItems =
       staleItems.filter(
         item =>
           !item.isDraft
       );
 
-
     console.log(
       '\nStale CMS items: ' +
       staleItems.length
     );
-
 
     if (!liveStaleItems.length) {
       console.log(
@@ -1665,13 +1555,11 @@ async function main() {
       continue;
     }
 
-
     console.log(
       'Unpublishing ' +
       liveStaleItems.length +
       ' stale item(s)...'
     );
-
 
     for (
       const stale
@@ -1688,7 +1576,6 @@ async function main() {
       );
     }
 
-
     try {
       await wfUnpublishItems(
         TOP_SCORERS_COLLECTION_ID,
@@ -1697,10 +1584,8 @@ async function main() {
         )
       );
 
-
       totalUnpublished +=
         liveStaleItems.length;
-
 
       console.log(
         'Stale items unpublished.'
@@ -1728,42 +1613,35 @@ async function main() {
     '============================================================'
   );
 
-
   console.log(
     'Updated by API Player ID: ' +
     totalUpdated
   );
-
 
   console.log(
     'Relinked by exact name: ' +
     totalRelinked
   );
 
-
   console.log(
     'Created: ' +
     totalCreated
   );
-
 
   console.log(
     'Published current items: ' +
     totalRepublished
   );
 
-
   console.log(
     'Unpublished stale items: ' +
     totalUnpublished
   );
 
-
   console.log(
     'Errors: ' +
     totalErrors
   );
-
 
   if (totalErrors > 0) {
     console.log(
