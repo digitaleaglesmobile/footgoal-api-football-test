@@ -32,6 +32,11 @@
 // - current successful updates may still be published
 // - stale items for that league are NOT unpublished
 //
+// PAGE URL (added):
+// - Every created/updated item also gets the "page-url" Link field
+//   = /top-scorers/<slug>, used by the /site-archive page so its
+//   links stay in sync automatically (no manual link maintenance).
+//
 // ============================================================
 
 
@@ -53,6 +58,9 @@ const TEAMS_COLLECTION_ID =
 const TARGET_TOP_N = 10;
 
 const EXPECTED_UCL_TEAMS = 36;
+
+// Folder of the Top Scorers collection pages on footgoal.co
+const TOP_SCORERS_PAGE_BASE = '/top-scorers/';
 
 
 const LEAGUES = [
@@ -128,7 +136,7 @@ function normalizeName(value) {
   return String(value || '')
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 }
@@ -138,7 +146,7 @@ function slugify(value) {
   return String(value || '')
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .replace(/-+/g, '-');
@@ -183,11 +191,7 @@ function isFinishedFixture(fixture) {
         : ''
     );
 
-  return [
-    'FT',
-    'AET',
-    'PEN'
-  ].includes(status);
+  return ['FT', 'AET', 'PEN'].includes(status);
 }
 
 
@@ -218,15 +222,13 @@ async function getUclLeaguePhaseContext(league) {
       .filter(
         fixture =>
           isUclLeaguePhaseRound(
-            fixture &&
-            fixture.league
+            fixture && fixture.league
               ? fixture.league.round
               : ''
           )
       );
 
-  const teamIds =
-    new Set();
+  const teamIds = new Set();
 
   for (const fixture of fixtures) {
     if (
@@ -235,11 +237,7 @@ async function getUclLeaguePhaseContext(league) {
       fixture.teams.home &&
       fixture.teams.home.id != null
     ) {
-      teamIds.add(
-        String(
-          fixture.teams.home.id
-        )
-      );
+      teamIds.add(String(fixture.teams.home.id));
     }
 
     if (
@@ -248,29 +246,17 @@ async function getUclLeaguePhaseContext(league) {
       fixture.teams.away &&
       fixture.teams.away.id != null
     ) {
-      teamIds.add(
-        String(
-          fixture.teams.away.id
-        )
-      );
+      teamIds.add(String(fixture.teams.away.id));
     }
   }
 
   const finishedFixtures =
-    fixtures.filter(
-      fixture =>
-        isFinishedFixture(fixture)
-    );
+    fixtures.filter(fixture => isFinishedFixture(fixture));
 
   return {
-    ready:
-      teamIds.size ===
-      EXPECTED_UCL_TEAMS,
-
+    ready: teamIds.size === EXPECTED_UCL_TEAMS,
     teamIds,
-
     fixtures,
-
     finishedFixtures
   };
 }
@@ -283,13 +269,8 @@ async function getUclLeaguePhaseContext(league) {
 function getFullApiName(player) {
   if (!player) return '';
 
-  const first = String(
-    player.firstname || ''
-  ).trim();
-
-  const last = String(
-    player.lastname || ''
-  ).trim();
+  const first = String(player.firstname || '').trim();
+  const last = String(player.lastname || '').trim();
 
   const combined = [first, last]
     .filter(Boolean)
@@ -308,30 +289,19 @@ function getFullApiName(player) {
 }
 
 
-function getPreferredPlayerName(
-  player,
-  existingItem = null
-) {
-  const fullApiName =
-    getFullApiName(player);
+function getPreferredPlayerName(player, existingItem = null) {
+  const fullApiName = getFullApiName(player);
 
   if (fullApiName) {
     return fullApiName;
   }
 
   const apiName = String(
-    player && player.name
-      ? player.name
-      : ''
+    player && player.name ? player.name : ''
   ).trim();
 
   const existingName = existingItem
-    ? String(
-        getField(
-          existingItem,
-          'name'
-        ) || ''
-      ).trim()
+    ? String(getField(existingItem, 'name') || '').trim()
     : '';
 
   if (
@@ -348,34 +318,19 @@ function getPreferredPlayerName(
 
 
 function getPossibleExactNames(player) {
-  const values =
-    new Set();
+  const values = new Set();
 
-  if (
-    player &&
-    player.name
-  ) {
-    values.add(
-      normalizeName(
-        player.name
-      )
-    );
+  if (player && player.name) {
+    values.add(normalizeName(player.name));
   }
 
-  const fullName =
-    getFullApiName(player);
+  const fullName = getFullApiName(player);
 
   if (fullName) {
-    values.add(
-      normalizeName(
-        fullName
-      )
-    );
+    values.add(normalizeName(fullName));
   }
 
-  return [
-    ...values
-  ].filter(Boolean);
+  return [...values].filter(Boolean);
 }
 
 
@@ -383,63 +338,43 @@ function getPossibleExactNames(player) {
 // API FOOTBALL
 // ============================================================
 
-async function apiFetch(
-  path,
-  retries = 3
-) {
+async function apiFetch(path, retries = 3) {
   await sleep(250);
 
   const res =
     await fetch(
-      'https://v3.football.api-sports.io' +
-        path,
+      'https://v3.football.api-sports.io' + path,
       {
         headers: {
-          'x-apisports-key':
-            API_FOOTBALL_KEY
+          'x-apisports-key': API_FOOTBALL_KEY
         }
       }
     );
 
-  if (
-    res.status === 429 &&
-    retries > 0
-  ) {
+  if (res.status === 429 && retries > 0) {
     console.warn(
       'API-Football rate limited — waiting 30 seconds...'
     );
 
     await sleep(30000);
 
-    return apiFetch(
-      path,
-      retries - 1
-    );
+    return apiFetch(path, retries - 1);
   }
 
   if (!res.ok) {
     throw new Error(
-      'API-Football ' +
-      res.status +
-      ': ' +
-      await res.text()
+      'API-Football ' + res.status + ': ' + await res.text()
     );
   }
 
-  const data =
-    await res.json();
+  const data = await res.json();
 
   if (
     data.errors &&
-    Object.keys(
-      data.errors
-    ).length
+    Object.keys(data.errors).length
   ) {
     throw new Error(
-      'API-Football errors: ' +
-      JSON.stringify(
-        data.errors
-      )
+      'API-Football errors: ' + JSON.stringify(data.errors)
     );
   }
 
@@ -451,60 +386,37 @@ async function apiFetch(
 // WEBFLOW REQUEST HELPER
 // ============================================================
 
-async function wfRequest(
-  url,
-  options = {},
-  retries = 4
-) {
-  const res =
-    await fetch(
-      url,
-      options
-    );
+async function wfRequest(url, options = {}, retries = 4) {
+  const res = await fetch(url, options);
 
-  if (
-    res.status === 429 &&
-    retries > 0
-  ) {
+  if (res.status === 429 && retries > 0) {
     console.warn(
       'Webflow rate limited — waiting 5 seconds...'
     );
 
     await sleep(5000);
 
-    return wfRequest(
-      url,
-      options,
-      retries - 1
-    );
+    return wfRequest(url, options, retries - 1);
   }
 
   if (!res.ok) {
     throw new Error(
-      'Webflow ' +
-      res.status +
-      ': ' +
-      await res.text()
+      'Webflow ' + res.status + ': ' + await res.text()
     );
   }
 
-  if (
-    res.status === 204
-  ) {
+  if (res.status === 204) {
     return null;
   }
 
-  const text =
-    await res.text();
+  const text = await res.text();
 
   if (!text) {
     return null;
   }
 
   try {
-    return JSON.parse(
-      text
-    );
+    return JSON.parse(text);
   } catch {
     return text;
   }
@@ -515,9 +427,7 @@ async function wfRequest(
 // WEBFLOW READ
 // ============================================================
 
-async function wfGetAllItems(
-  collectionId
-) {
+async function wfGetAllItems(collectionId) {
   const items = [];
 
   let offset = 0;
@@ -534,30 +444,20 @@ async function wfGetAllItems(
           offset,
         {
           headers: {
-            Authorization:
-              'Bearer ' +
-              WEBFLOW_TOKEN,
-
-            accept:
-              'application/json'
+            Authorization: 'Bearer ' + WEBFLOW_TOKEN,
+            accept: 'application/json'
           }
         }
       );
 
-    items.push(
-      ...(
-        data.items || []
-      )
-    );
+    items.push(...(data.items || []));
 
     const total =
       data.pagination
         ? data.pagination.total
         : items.length;
 
-    if (
-      items.length >= total
-    ) {
+    if (items.length >= total) {
       break;
     }
 
@@ -572,11 +472,7 @@ async function wfGetAllItems(
 // WEBFLOW UPDATE / CREATE
 // ============================================================
 
-async function wfUpdateItem(
-  collectionId,
-  itemId,
-  fieldData
-) {
+async function wfUpdateItem(collectionId, itemId, fieldData) {
   return wfRequest(
     'https://api.webflow.com/v2/collections/' +
       collectionId +
@@ -586,32 +482,22 @@ async function wfUpdateItem(
       method: 'PATCH',
 
       headers: {
-        Authorization:
-          'Bearer ' +
-          WEBFLOW_TOKEN,
-
-        accept:
-          'application/json',
-
-        'content-type':
-          'application/json'
+        Authorization: 'Bearer ' + WEBFLOW_TOKEN,
+        accept: 'application/json',
+        'content-type': 'application/json'
       },
 
-      body:
-        JSON.stringify({
-          isArchived: false,
-          isDraft: false,
-          fieldData
-        })
+      body: JSON.stringify({
+        isArchived: false,
+        isDraft: false,
+        fieldData
+      })
     }
   );
 }
 
 
-async function wfCreateItem(
-  collectionId,
-  fieldData
-) {
+async function wfCreateItem(collectionId, fieldData) {
   return wfRequest(
     'https://api.webflow.com/v2/collections/' +
       collectionId +
@@ -620,23 +506,16 @@ async function wfCreateItem(
       method: 'POST',
 
       headers: {
-        Authorization:
-          'Bearer ' +
-          WEBFLOW_TOKEN,
-
-        accept:
-          'application/json',
-
-        'content-type':
-          'application/json'
+        Authorization: 'Bearer ' + WEBFLOW_TOKEN,
+        accept: 'application/json',
+        'content-type': 'application/json'
       },
 
-      body:
-        JSON.stringify({
-          isArchived: false,
-          isDraft: false,
-          fieldData
-        })
+      body: JSON.stringify({
+        isArchived: false,
+        isDraft: false,
+        fieldData
+      })
     }
   );
 }
@@ -646,31 +525,15 @@ async function wfCreateItem(
 // WEBFLOW PUBLISH
 // ============================================================
 
-async function wfPublishItems(
-  collectionId,
-  itemIds
-) {
-  const uniqueIds =
-    [
-      ...new Set(
-        itemIds
-      )
-    ];
+async function wfPublishItems(collectionId, itemIds) {
+  const uniqueIds = [...new Set(itemIds)];
 
   if (!uniqueIds.length) {
     return;
   }
 
-  for (
-    let i = 0;
-    i < uniqueIds.length;
-    i += 100
-  ) {
-    const batch =
-      uniqueIds.slice(
-        i,
-        i + 100
-      );
+  for (let i = 0; i < uniqueIds.length; i += 100) {
+    const batch = uniqueIds.slice(i, i + 100);
 
     await wfRequest(
       'https://api.webflow.com/v2/collections/' +
@@ -680,22 +543,14 @@ async function wfPublishItems(
         method: 'POST',
 
         headers: {
-          Authorization:
-            'Bearer ' +
-            WEBFLOW_TOKEN,
-
-          accept:
-            'application/json',
-
-          'content-type':
-            'application/json'
+          Authorization: 'Bearer ' + WEBFLOW_TOKEN,
+          accept: 'application/json',
+          'content-type': 'application/json'
         },
 
-        body:
-          JSON.stringify({
-            itemIds:
-              batch
-          })
+        body: JSON.stringify({
+          itemIds: batch
+        })
       }
     );
 
@@ -708,31 +563,15 @@ async function wfPublishItems(
 // WEBFLOW UNPUBLISH
 // ============================================================
 
-async function wfUnpublishItems(
-  collectionId,
-  itemIds
-) {
-  const uniqueIds =
-    [
-      ...new Set(
-        itemIds
-      )
-    ];
+async function wfUnpublishItems(collectionId, itemIds) {
+  const uniqueIds = [...new Set(itemIds)];
 
   if (!uniqueIds.length) {
     return;
   }
 
-  for (
-    let i = 0;
-    i < uniqueIds.length;
-    i += 100
-  ) {
-    const batch =
-      uniqueIds.slice(
-        i,
-        i + 100
-      );
+  for (let i = 0; i < uniqueIds.length; i += 100) {
+    const batch = uniqueIds.slice(i, i + 100);
 
     await wfRequest(
       'https://api.webflow.com/v2/collections/' +
@@ -742,26 +581,14 @@ async function wfUnpublishItems(
         method: 'DELETE',
 
         headers: {
-          Authorization:
-            'Bearer ' +
-            WEBFLOW_TOKEN,
-
-          accept:
-            'application/json',
-
-          'content-type':
-            'application/json'
+          Authorization: 'Bearer ' + WEBFLOW_TOKEN,
+          accept: 'application/json',
+          'content-type': 'application/json'
         },
 
-        body:
-          JSON.stringify({
-            items:
-              batch.map(
-                id => ({
-                  id
-                })
-              )
-          })
+        body: JSON.stringify({
+          items: batch.map(id => ({ id }))
+        })
       }
     );
 
@@ -774,112 +601,57 @@ async function wfUnpublishItems(
 // TEAM LOOKUP
 // ============================================================
 
-function buildTeamLookup(
-  allTeams
-) {
-  const byApiId =
-    new Map();
+function buildTeamLookup(allTeams) {
+  const byApiId = new Map();
+  const byName = new Map();
 
-  const byName =
-    new Map();
-
-  for (
-    const team
-    of allTeams
-  ) {
-    const apiId =
-      getField(
-        team,
-        'api-team-id'
-      );
-
-    const name =
-      getField(
-        team,
-        'name'
-      );
+  for (const team of allTeams) {
+    const apiId = getField(team, 'api-team-id');
+    const name = getField(team, 'name');
 
     if (apiId) {
-      byApiId.set(
-        String(apiId),
-        team
-      );
+      byApiId.set(String(apiId), team);
     }
 
     if (name) {
-      const normalized =
-        normalizeName(name);
+      const normalized = normalizeName(name);
 
-      if (
-        !byName.has(
-          normalized
-        )
-      ) {
-        byName.set(
-          normalized,
-          []
-        );
+      if (!byName.has(normalized)) {
+        byName.set(normalized, []);
       }
 
-      byName
-        .get(normalized)
-        .push(team);
+      byName.get(normalized).push(team);
     }
   }
 
-  return {
-    byApiId,
-    byName
-  };
+  return { byApiId, byName };
 }
 
 
-function resolveTeam(
-  apiTeam,
-  teamLookup
-) {
+function resolveTeam(apiTeam, teamLookup) {
   if (!apiTeam) {
     return null;
   }
 
   const idMatch =
-    teamLookup
-      .byApiId
-      .get(
-        String(
-          apiTeam.id
-        )
-      );
+    teamLookup.byApiId.get(String(apiTeam.id));
 
   if (idMatch) {
     return {
       item: idMatch,
-      method:
-        'api-team-id'
+      method: 'api-team-id'
     };
   }
 
-  const normalized =
-    normalizeName(
-      apiTeam.name
-    );
+  const normalized = normalizeName(apiTeam.name);
 
   const exact =
-    teamLookup
-      .byName
-      .get(
-        normalized
-      ) || [];
+    teamLookup.byName.get(normalized) || [];
 
-  if (
-    exact.length === 1
-  ) {
+  if (exact.length === 1) {
     return {
-      item:
-        exact[0],
-
-      method:
-        'exact-name'
+      item: exact[0],
+      method: 'exact-name'
     };
   }
 
@@ -891,78 +663,36 @@ function resolveTeam(
 // EXISTING SCORER LOOKUP
 // ============================================================
 
-function buildExistingLookup(
-  items
-) {
-  const byApiPlayerId =
-    new Map();
+function buildExistingLookup(items) {
+  const byApiPlayerId = new Map();
+  const byExactName = new Map();
 
-  const byExactName =
-    new Map();
-
-  for (
-    const item
-    of items
-  ) {
-    const apiId =
-      getField(
-        item,
-        'api-player-id'
-      );
-
-    const name =
-      getField(
-        item,
-        'name'
-      );
+  for (const item of items) {
+    const apiId = getField(item, 'api-player-id');
+    const name = getField(item, 'name');
 
     if (apiId) {
-      const key =
-        String(apiId);
+      const key = String(apiId);
 
-      if (
-        !byApiPlayerId.has(
-          key
-        )
-      ) {
-        byApiPlayerId.set(
-          key,
-          []
-        );
+      if (!byApiPlayerId.has(key)) {
+        byApiPlayerId.set(key, []);
       }
 
-      byApiPlayerId
-        .get(key)
-        .push(item);
+      byApiPlayerId.get(key).push(item);
     }
 
     if (name) {
-      const normalized =
-        normalizeName(
-          name
-        );
+      const normalized = normalizeName(name);
 
-      if (
-        !byExactName.has(
-          normalized
-        )
-      ) {
-        byExactName.set(
-          normalized,
-          []
-        );
+      if (!byExactName.has(normalized)) {
+        byExactName.set(normalized, []);
       }
 
-      byExactName
-        .get(normalized)
-        .push(item);
+      byExactName.get(normalized).push(item);
     }
   }
 
-  return {
-    byApiPlayerId,
-    byExactName
-  };
+  return { byApiPlayerId, byExactName };
 }
 
 
@@ -970,41 +700,21 @@ function buildExistingLookup(
 // PICK SAFEST ITEM FROM DUPLICATES
 // ============================================================
 
-function scoreExistingCandidate(
-  item,
-  player,
-  season
-) {
+function scoreExistingCandidate(item, player, season) {
   let score = 0;
 
   const existingName =
-    normalizeName(
-      getField(
-        item,
-        'name'
-      )
-    );
+    normalizeName(getField(item, 'name'));
 
   const possibleNames =
-    getPossibleExactNames(
-      player
-    );
+    getPossibleExactNames(player);
 
-  if (
-    possibleNames.includes(
-      existingName
-    )
-  ) {
+  if (possibleNames.includes(existingName)) {
     score += 100;
   }
 
   if (
-    String(
-      getField(
-        item,
-        'season'
-      ) || ''
-    ) ===
+    String(getField(item, 'season') || '') ===
     String(season)
   ) {
     score += 20;
@@ -1030,30 +740,17 @@ function pickBestCandidate(
 ) {
   const available =
     candidates.filter(
-      item =>
-        !alreadyMatchedIds.has(
-          item.id
-        )
+      item => !alreadyMatchedIds.has(item.id)
     );
 
   if (!available.length) {
     return null;
   }
 
-  return [
-    ...available
-  ].sort(
+  return [...available].sort(
     (a, b) =>
-      scoreExistingCandidate(
-        b,
-        player,
-        season
-      ) -
-      scoreExistingCandidate(
-        a,
-        player,
-        season
-      )
+      scoreExistingCandidate(b, player, season) -
+      scoreExistingCandidate(a, player, season)
   )[0];
 }
 
@@ -1068,47 +765,24 @@ function findExactNameCandidates(
   alreadyMatchedIds
 ) {
   const result = [];
-  const seen =
-    new Set();
+  const seen = new Set();
 
-  const names =
-    getPossibleExactNames(
-      player
-    );
+  const names = getPossibleExactNames(player);
 
-  for (
-    const normalizedName
-    of names
-  ) {
+  for (const normalizedName of names) {
     const matches =
-      lookup
-        .byExactName
-        .get(
-          normalizedName
-        ) || [];
+      lookup.byExactName.get(normalizedName) || [];
 
-    for (
-      const item
-      of matches
-    ) {
+    for (const item of matches) {
       if (
-        seen.has(
-          item.id
-        ) ||
-        alreadyMatchedIds.has(
-          item.id
-        )
+        seen.has(item.id) ||
+        alreadyMatchedIds.has(item.id)
       ) {
         continue;
       }
 
-      seen.add(
-        item.id
-      );
-
-      result.push(
-        item
-      );
+      seen.add(item.id);
+      result.push(item);
     }
   }
 
@@ -1129,54 +803,34 @@ function buildCurrentFieldData({
   existingItem
 }) {
   const preferredName =
-    getPreferredPlayerName(
-      player,
-      existingItem
-    );
+    getPreferredPlayerName(player, existingItem);
 
   const goals =
-    stats.goals &&
-    stats.goals.total != null
-      ? Number(
-          stats.goals.total
-        )
+    stats.goals && stats.goals.total != null
+      ? Number(stats.goals.total)
       : 0;
 
   const assists =
-    stats.goals &&
-    stats.goals.assists != null
-      ? Number(
-          stats.goals.assists
-        )
+    stats.goals && stats.goals.assists != null
+      ? Number(stats.goals.assists)
       : 0;
 
   const fieldData = {
-    name:
-      preferredName,
+    name: preferredName,
 
-    'api-player-id':
-      String(
-        player.id
-      ),
+    'api-player-id': String(player.id),
 
     goals,
 
     assists,
 
-    nationality:
-      player.nationality ||
-      '',
+    nationality: player.nationality || '',
 
-    season:
-      String(
-        league.season
-      ),
+    season: String(league.season),
 
-    league:
-      league.webflow_id,
+    league: league.webflow_id,
 
-    team:
-      teamMatch.item.id,
+    team: teamMatch.item.id,
 
     rank
   };
@@ -1206,19 +860,14 @@ function buildCurrentFieldData({
 // ============================================================
 
 async function main() {
-  if (
-    !WEBFLOW_TOKEN ||
-    !API_FOOTBALL_KEY
-  ) {
+  if (!WEBFLOW_TOKEN || !API_FOOTBALL_KEY) {
     throw new Error(
       'Missing WEBFLOW_TOKEN or API_FOOTBALL_KEY'
     );
   }
 
   if (!CONFIRM) {
-    console.log(
-      'SAFETY STOP: nothing was written.'
-    );
+    console.log('SAFETY STOP: nothing was written.');
 
     console.log(
       'Run with CONFIRM=yes to execute the live sync.'
@@ -1231,50 +880,31 @@ async function main() {
     '============================================================'
   );
 
-  console.log(
-    'LIVE TOP SCORERS 2026 SYNC'
-  );
+  console.log('LIVE TOP SCORERS 2026 SYNC');
 
-  console.log(
-    'ALL 8 LEAGUES'
-  );
+  console.log('ALL 8 LEAGUES');
 
   console.log(
     '============================================================\n'
   );
 
-  console.log(
-    'Loading Webflow Top Scorers...'
-  );
+  console.log('Loading Webflow Top Scorers...');
 
   const allScorers =
-    await wfGetAllItems(
-      TOP_SCORERS_COLLECTION_ID
-    );
+    await wfGetAllItems(TOP_SCORERS_COLLECTION_ID);
 
   console.log(
-    'Top Scorers CMS items: ' +
-    allScorers.length
+    'Top Scorers CMS items: ' + allScorers.length
   );
 
-  console.log(
-    '\nLoading Webflow Teams...'
-  );
+  console.log('\nLoading Webflow Teams...');
 
   const allTeams =
-    await wfGetAllItems(
-      TEAMS_COLLECTION_ID
-    );
+    await wfGetAllItems(TEAMS_COLLECTION_ID);
 
-  console.log(
-    'Teams CMS items: ' +
-    allTeams.length
-  );
+  console.log('Teams CMS items: ' + allTeams.length);
 
-  const teamLookup =
-    buildTeamLookup(
-      allTeams
-    );
+  const teamLookup = buildTeamLookup(allTeams);
 
   let totalUpdated = 0;
   let totalCreated = 0;
@@ -1284,18 +914,13 @@ async function main() {
   let totalErrors = 0;
 
 
-  for (
-    const league
-    of LEAGUES
-  ) {
+  for (const league of LEAGUES) {
     console.log(
       '\n\n============================================================'
     );
 
     console.log(
-      league.name +
-      ' — season ' +
-      league.season
+      league.name + ' — season ' + league.season
     );
 
     console.log(
@@ -1305,22 +930,15 @@ async function main() {
     const leagueItems =
       allScorers.filter(
         item =>
-          getField(
-            item,
-            'league'
-          ) ===
-          league.webflow_id
+          getField(item, 'league') === league.webflow_id
       );
 
     console.log(
-      'Existing CMS scorer items: ' +
-      leagueItems.length
+      'Existing CMS scorer items: ' + leagueItems.length
     );
 
     const existingLookup =
-      buildExistingLookup(
-        leagueItems
-      );
+      buildExistingLookup(leagueItems);
 
     console.log(
       'Fetching current API Top Scorers...'
@@ -1347,33 +965,23 @@ async function main() {
       continue;
     }
 
-    const apiList =
-      apiData.response ||
-      [];
+    const apiList = apiData.response || [];
 
-    let eligibleApiList =
-      apiList;
+    let eligibleApiList = apiList;
 
 
     // ========================================================
     // UCL SPECIAL FILTER
     // ========================================================
 
-    if (
-      league.code ===
-      'UCL'
-    ) {
-      console.log(
-        'Building UCL League Phase filter...'
-      );
+    if (league.code === 'UCL') {
+      console.log('Building UCL League Phase filter...');
 
       let uclContext;
 
       try {
         uclContext =
-          await getUclLeaguePhaseContext(
-            league
-          );
+          await getUclLeaguePhaseContext(league);
       } catch (err) {
         totalErrors++;
 
@@ -1427,11 +1035,7 @@ async function main() {
       // We do NOT want those displayed.
       // ------------------------------------------------------
 
-      if (
-        uclContext
-          .finishedFixtures
-          .length === 0
-      ) {
+      if (uclContext.finishedFixtures.length === 0) {
         console.log(
           'No finished UCL League Phase matches yet.'
         );
@@ -1442,18 +1046,10 @@ async function main() {
 
         const liveOldIds =
           leagueItems
-            .filter(
-              item =>
-                !item.isDraft
-            )
-            .map(
-              item =>
-                item.id
-            );
+            .filter(item => !item.isDraft)
+            .map(item => item.id);
 
-        if (
-          !liveOldIds.length
-        ) {
+        if (!liveOldIds.length) {
           console.log(
             'No published UCL scorer items need unpublishing.'
           );
@@ -1473,8 +1069,7 @@ async function main() {
             liveOldIds
           );
 
-          totalUnpublished +=
-            liveOldIds.length;
+          totalUnpublished += liveOldIds.length;
 
           console.log(
             'UCL scorer items unpublished until League Phase begins.'
@@ -1482,10 +1077,7 @@ async function main() {
         } catch (err) {
           totalErrors++;
 
-          console.error(
-            'UCL UNPUBLISH ERROR:',
-            err.message
-          );
+          console.error('UCL UNPUBLISH ERROR:', err.message);
         }
 
         continue;
@@ -1499,47 +1091,33 @@ async function main() {
       // ------------------------------------------------------
 
       eligibleApiList =
-        apiList.filter(
-          entry => {
-            const team =
-              getScorerTeam(
-                entry
-              );
+        apiList.filter(entry => {
+          const team = getScorerTeam(entry);
 
-            const allowed =
-              team &&
-              team.id != null &&
-              uclContext
-                .teamIds
-                .has(
-                  String(
-                    team.id
-                  )
-                );
+          const allowed =
+            team &&
+            team.id != null &&
+            uclContext.teamIds.has(String(team.id));
 
-            if (!allowed) {
-              console.log(
-                'UCL QUALIFIER FILTER: skipping ' +
-                (
-                  entry &&
-                  entry.player &&
-                  entry.player.name
-                    ? entry.player.name
-                    : 'unknown player'
-                ) +
-                ' — ' +
-                (
-                  team &&
-                  team.name
-                    ? team.name
-                    : 'unknown team'
-                )
-              );
-            }
-
-            return allowed;
+          if (!allowed) {
+            console.log(
+              'UCL QUALIFIER FILTER: skipping ' +
+              (
+                entry && entry.player && entry.player.name
+                  ? entry.player.name
+                  : 'unknown player'
+              ) +
+              ' — ' +
+              (
+                team && team.name
+                  ? team.name
+                  : 'unknown team'
+              )
+            );
           }
-        );
+
+          return allowed;
+        });
 
       console.log(
         'UCL eligible League Phase scorers: ' +
@@ -1555,19 +1133,14 @@ async function main() {
     // ========================================================
 
     const currentTop =
-      eligibleApiList.slice(
-        0,
-        TARGET_TOP_N
-      );
+      eligibleApiList.slice(0, TARGET_TOP_N);
 
     console.log(
-      'API scorers returned: ' +
-      apiList.length
+      'API scorers returned: ' + apiList.length
     );
 
     console.log(
-      'Target current list: ' +
-      currentTop.length
+      'Target current list: ' + currentTop.length
     );
 
 
@@ -1575,28 +1148,15 @@ async function main() {
     // NO CURRENT SCORERS
     // ========================================================
 
-    if (
-      currentTop.length ===
-      0
-    ) {
-      console.log(
-        'No valid 2026 scorer data yet.'
-      );
+    if (currentTop.length === 0) {
+      console.log('No valid 2026 scorer data yet.');
 
       const liveOldIds =
         leagueItems
-          .filter(
-            item =>
-              !item.isDraft
-          )
-          .map(
-            item =>
-              item.id
-          );
+          .filter(item => !item.isDraft)
+          .map(item => item.id);
 
-      if (
-        !liveOldIds.length
-      ) {
+      if (!liveOldIds.length) {
         console.log(
           'No live stale scorer items to unpublish.'
         );
@@ -1616,8 +1176,7 @@ async function main() {
           liveOldIds
         );
 
-        totalUnpublished +=
-          liveOldIds.length;
+        totalUnpublished += liveOldIds.length;
 
         console.log(
           'Stale scorers unpublished successfully.'
@@ -1625,101 +1184,65 @@ async function main() {
       } catch (err) {
         totalErrors++;
 
-        console.error(
-          'UNPUBLISH ERROR:',
-          err.message
-        );
+        console.error('UNPUBLISH ERROR:', err.message);
       }
 
       continue;
     }
 
 
-    const matchedCmsIds =
-      new Set();
+    const matchedCmsIds = new Set();
 
-    const publishIds =
-      [];
+    const publishIds = [];
 
-    let leagueHadError =
-      false;
+    let leagueHadError = false;
 
 
     // ========================================================
     // SYNC CURRENT TOP SCORERS
     // ========================================================
 
-    for (
-      let index = 0;
-      index < currentTop.length;
-      index++
-    ) {
-      const apiEntry =
-        currentTop[index];
+    for (let index = 0; index < currentTop.length; index++) {
+      const apiEntry = currentTop[index];
 
-      const player =
-        apiEntry.player;
+      const player = apiEntry.player;
 
       const stats =
-        apiEntry.statistics &&
-        apiEntry.statistics[0]
+        apiEntry.statistics && apiEntry.statistics[0]
           ? apiEntry.statistics[0]
           : {};
 
-      const rank =
-        index + 1;
+      const rank = index + 1;
 
-      const apiPlayerId =
-        String(
-          player.id
-        );
+      const apiPlayerId = String(player.id);
 
       console.log(
         '\n----------------------------------------'
       );
 
       console.log(
-        '#' +
-        rank +
-        ' ' +
-        (
-          player.name ||
-          apiPlayerId
-        )
+        '#' + rank + ' ' + (player.name || apiPlayerId)
       );
 
       const teamMatch =
-        resolveTeam(
-          stats.team ||
-          null,
-          teamLookup
-        );
+        resolveTeam(stats.team || null, teamLookup);
 
       if (!teamMatch) {
         totalErrors++;
-        leagueHadError =
-          true;
+        leagueHadError = true;
 
         console.error(
           'TEAM MATCH FAILED:',
-          stats.team
-            ? stats.team.name
-            : 'unknown team'
+          stats.team ? stats.team.name : 'unknown team'
         );
 
-        console.error(
-          'Skipping this player safely.'
-        );
+        console.error('Skipping this player safely.');
 
         continue;
       }
 
       const idCandidates =
-        existingLookup
-          .byApiPlayerId
-          .get(
-            apiPlayerId
-          ) || [];
+        existingLookup.byApiPlayerId.get(apiPlayerId) || [];
 
       let existingItem =
         pickBestCandidate(
@@ -1730,9 +1253,7 @@ async function main() {
         );
 
       let matchMethod =
-        existingItem
-          ? 'api-player-id'
-          : null;
+        existingItem ? 'api-player-id' : null;
 
 
       // ------------------------------------------------------
@@ -1747,21 +1268,13 @@ async function main() {
             matchedCmsIds
           );
 
-        if (
-          exactCandidates.length ===
-          1
-        ) {
-          existingItem =
-            exactCandidates[0];
+        if (exactCandidates.length === 1) {
+          existingItem = exactCandidates[0];
 
-          matchMethod =
-            'exact-name';
+          matchMethod = 'exact-name';
         }
 
-        if (
-          exactCandidates.length >
-          1
-        ) {
+        if (exactCandidates.length > 1) {
           console.warn(
             'Multiple exact-name CMS matches found.'
           );
@@ -1778,9 +1291,7 @@ async function main() {
       // ------------------------------------------------------
 
       if (existingItem) {
-        matchedCmsIds.add(
-          existingItem.id
-        );
+        matchedCmsIds.add(existingItem.id);
 
         const fieldData =
           buildCurrentFieldData({
@@ -1792,25 +1303,26 @@ async function main() {
             existingItem
           });
 
-        console.log(
-          'Match: ' +
-          matchMethod
-        );
+        // PAGE URL (added): keep the Link field filled for
+        // existing items. The slug is never changed on update,
+        // so we reuse the one already stored in the CMS.
+        const existingSlug =
+          getField(existingItem, 'slug');
+
+        if (existingSlug) {
+          fieldData['page-url'] =
+            TOP_SCORERS_PAGE_BASE + existingSlug;
+        }
+
+        console.log('Match: ' + matchMethod);
 
         console.log(
           'CMS item: ' +
-          (
-            getField(
-              existingItem,
-              'name'
-            ) ||
-            existingItem.id
-          )
+          (getField(existingItem, 'name') || existingItem.id)
         );
 
         console.log(
-          'New display name: ' +
-          fieldData.name
+          'New display name: ' + fieldData.name
         );
 
         console.log(
@@ -1821,11 +1333,7 @@ async function main() {
         );
 
         console.log(
-          'Team: ' +
-          teamMatch
-            .item
-            .fieldData
-            .name
+          'Team: ' + teamMatch.item.fieldData.name
         );
 
         try {
@@ -1835,32 +1343,21 @@ async function main() {
             fieldData
           );
 
-          publishIds.push(
-            existingItem.id
-          );
+          publishIds.push(existingItem.id);
 
-          if (
-            matchMethod ===
-            'exact-name'
-          ) {
+          if (matchMethod === 'exact-name') {
             totalRelinked++;
           } else {
             totalUpdated++;
           }
 
-          console.log(
-            'UPDATED OK'
-          );
+          console.log('UPDATED OK');
         } catch (err) {
           totalErrors++;
 
-          leagueHadError =
-            true;
+          leagueHadError = true;
 
-          console.error(
-            'UPDATE FAILED:',
-            err.message
-          );
+          console.error('UPDATE FAILED:', err.message);
         }
 
         await sleep(300);
@@ -1880,30 +1377,25 @@ async function main() {
           league,
           rank,
           teamMatch,
-          existingItem:
-            null
+          existingItem: null
         });
 
       fieldData.slug =
-        slugify(
-          fieldData.name
-        ) +
+        slugify(fieldData.name) +
         '-' +
-        league.code
-          .toLowerCase() +
+        league.code.toLowerCase() +
         '-' +
         league.season +
         '-' +
         apiPlayerId;
 
-      console.log(
-        'No safe existing match.'
-      );
+      // PAGE URL (added): used by the /site-archive links.
+      fieldData['page-url'] =
+        TOP_SCORERS_PAGE_BASE + fieldData.slug;
 
-      console.log(
-        'Creating: ' +
-        fieldData.name
-      );
+      console.log('No safe existing match.');
+
+      console.log('Creating: ' + fieldData.name);
 
       console.log(
         'Goals: ' +
@@ -1913,11 +1405,7 @@ async function main() {
       );
 
       console.log(
-        'Team: ' +
-        teamMatch
-          .item
-          .fieldData
-          .name
+        'Team: ' + teamMatch.item.fieldData.name
       );
 
       try {
@@ -1927,38 +1415,25 @@ async function main() {
             fieldData
           );
 
-        if (
-          !created ||
-          !created.id
-        ) {
+        if (!created || !created.id) {
           throw new Error(
             'Webflow create response had no item ID'
           );
         }
 
-        matchedCmsIds.add(
-          created.id
-        );
+        matchedCmsIds.add(created.id);
 
-        publishIds.push(
-          created.id
-        );
+        publishIds.push(created.id);
 
         totalCreated++;
 
-        console.log(
-          'CREATED OK'
-        );
+        console.log('CREATED OK');
       } catch (err) {
         totalErrors++;
 
-        leagueHadError =
-          true;
+        leagueHadError = true;
 
-        console.error(
-          'CREATE FAILED:',
-          err.message
-        );
+        console.error('CREATE FAILED:', err.message);
       }
 
       await sleep(300);
@@ -1969,9 +1444,7 @@ async function main() {
     // PUBLISH CURRENT ITEMS
     // ========================================================
 
-    if (
-      publishIds.length
-    ) {
+    if (publishIds.length) {
       console.log(
         '\nPublishing ' +
         publishIds.length +
@@ -1984,22 +1457,15 @@ async function main() {
           publishIds
         );
 
-        totalRepublished +=
-          publishIds.length;
+        totalRepublished += publishIds.length;
 
-        console.log(
-          'Current Top Scorers published.'
-        );
+        console.log('Current Top Scorers published.');
       } catch (err) {
         totalErrors++;
 
-        leagueHadError =
-          true;
+        leagueHadError = true;
 
-        console.error(
-          'PUBLISH ERROR:',
-          err.message
-        );
+        console.error('PUBLISH ERROR:', err.message);
       }
     }
 
@@ -2009,9 +1475,7 @@ async function main() {
     // ========================================================
 
     if (leagueHadError) {
-      console.warn(
-        '\nLeague had one or more errors.'
-      );
+      console.warn('\nLeague had one or more errors.');
 
       console.warn(
         'SAFETY: stale scorer items will NOT be unpublished for this league.'
@@ -2027,26 +1491,17 @@ async function main() {
 
     const staleItems =
       leagueItems.filter(
-        item =>
-          !matchedCmsIds.has(
-            item.id
-          )
+        item => !matchedCmsIds.has(item.id)
       );
 
     const liveStaleItems =
-      staleItems.filter(
-        item =>
-          !item.isDraft
-      );
+      staleItems.filter(item => !item.isDraft);
 
     console.log(
-      '\nStale CMS items: ' +
-      staleItems.length
+      '\nStale CMS items: ' + staleItems.length
     );
 
-    if (
-      !liveStaleItems.length
-    ) {
+    if (!liveStaleItems.length) {
       console.log(
         'No live stale items need unpublishing.'
       );
@@ -2060,44 +1515,26 @@ async function main() {
       ' stale item(s)...'
     );
 
-    for (
-      const stale
-      of liveStaleItems
-    ) {
+    for (const stale of liveStaleItems) {
       console.log(
         '  STALE: ' +
-        (
-          getField(
-            stale,
-            'name'
-          ) ||
-          stale.id
-        )
+        (getField(stale, 'name') || stale.id)
       );
     }
 
     try {
       await wfUnpublishItems(
         TOP_SCORERS_COLLECTION_ID,
-        liveStaleItems.map(
-          item =>
-            item.id
-        )
+        liveStaleItems.map(item => item.id)
       );
 
-      totalUnpublished +=
-        liveStaleItems.length;
+      totalUnpublished += liveStaleItems.length;
 
-      console.log(
-        'Stale items unpublished.'
-      );
+      console.log('Stale items unpublished.');
     } catch (err) {
       totalErrors++;
 
-      console.error(
-        'STALE UNPUBLISH ERROR:',
-        err.message
-      );
+      console.error('STALE UNPUBLISH ERROR:', err.message);
     }
   }
 
@@ -2110,53 +1547,38 @@ async function main() {
     '\n\n============================================================'
   );
 
-  console.log(
-    'LIVE SYNC COMPLETE'
-  );
+  console.log('LIVE SYNC COMPLETE');
 
   console.log(
     '============================================================'
   );
 
   console.log(
-    'Updated by API Player ID: ' +
-    totalUpdated
+    'Updated by API Player ID: ' + totalUpdated
   );
 
   console.log(
-    'Relinked by exact name: ' +
-    totalRelinked
+    'Relinked by exact name: ' + totalRelinked
+  );
+
+  console.log('Created: ' + totalCreated);
+
+  console.log(
+    'Published current items: ' + totalRepublished
   );
 
   console.log(
-    'Created: ' +
-    totalCreated
+    'Unpublished stale items: ' + totalUnpublished
   );
 
-  console.log(
-    'Published current items: ' +
-    totalRepublished
-  );
+  console.log('Errors: ' + totalErrors);
 
-  console.log(
-    'Unpublished stale items: ' +
-    totalUnpublished
-  );
-
-  console.log(
-    'Errors: ' +
-    totalErrors
-  );
-
-  if (
-    totalErrors > 0
-  ) {
+  if (totalErrors > 0) {
     console.log(
       '\nCompleted with warnings/errors. Review the log.'
     );
 
-    process.exitCode =
-      1;
+    process.exitCode = 1;
   } else {
     console.log(
       '\nEverything completed successfully.'
@@ -2170,10 +1592,7 @@ async function main() {
 // ============================================================
 
 main().catch(err => {
-  console.error(
-    '\nFATAL ERROR:',
-    err.message
-  );
+  console.error('\nFATAL ERROR:', err.message);
 
   process.exit(1);
 });
