@@ -23,6 +23,10 @@ const WF = {
   TOP_SCORERS: '6a32a89633c9bd6bea624094',
 };
 
+// Folder of the Standings collection pages on footgoal.co
+// (used for the "page-url" Link field read by the /site-archive page)
+const STANDINGS_PAGE_BASE = '/standings/';
+
 // ── LEAGUE CONFIG — all 7 active leagues (Champions League excluded until Aug 27, 2026 draw) ────────────
 const LEAGUES = [
   { code: 'PL',  name: 'Premier League',        api_id: 39,  webflow_id: '6a32a9cb63396a5393212f3a', season: 2026 },
@@ -76,7 +80,7 @@ function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
 
 function slugify(str) {
   return str.toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9\s-]/g, '')
     .trim().replace(/\s+/g, '-').replace(/-+/g, '-');
 }
@@ -84,7 +88,7 @@ function slugify(str) {
 function normalizeTeamName(name) {
   var n = name
     .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .replace(/[.\-']/g, ' ')
     .replace(/\b(fc|afc|cf|sc|ac|rc|rcd|cd|ud|sv|vfl|vfb|tsg|ssc|us|as|ss|fsv|tsv|spvgg|bsc|bv|vfr|fk|nk|sk|gnk|ca|club|de|del|la|le|el|los|las|a|do|da)\b/gi, '')
     .replace(/[^a-z0-9\s]/g, '')
@@ -363,9 +367,14 @@ async function syncStandings(league, teamByNormalizedName, allTeams, allStanding
     var match = findTeamMatch(teamName, teamByNormalizedName);
     if (!match) { console.warn('No Webflow team found for: ' + teamName); return; }
     var wfTeam = match.item;
+    var standingSlug = normalizeTeamName(wfTeam.fieldData.name).replace(/\s+/g, '-') + '-' + league.code.toLowerCase() + '-standing';
     var fieldData = {
       name: wfTeam.fieldData.name,
-      slug: normalizeTeamName(wfTeam.fieldData.name).replace(/\s+/g, '-') + '-' + league.code.toLowerCase() + '-standing',
+      slug: standingSlug,
+      // PAGE URL (added): Link field used by the /site-archive page so its
+      // Standings links stay in sync automatically. Slug is rewritten on every
+      // sync (above), so this always matches the live page address.
+      'page-url': STANDINGS_PAGE_BASE + standingSlug,
       team: wfTeam.id, league: league.webflow_id,
       position: entry.rank, played: entry.all.played, won: entry.all.win,
       drawn: entry.all.draw, lost: entry.all.lose,
