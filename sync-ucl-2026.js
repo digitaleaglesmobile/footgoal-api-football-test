@@ -32,12 +32,15 @@ const UCL = {
   seasonLabel: '2026/27'
 };
 
+// Folder of the Standings collection pages on footgoal.co
+// (used for the "page-url" Link field read by the /site-archive page)
+const STANDINGS_PAGE_BASE = '/standings/';
+
 const EXPECTED_TEAMS = 36;
 const EXPECTED_FIXTURES = 144;
 const EXPECTED_MATCHWEEKS = 8;
 
-const MATCHDAY_GAP_MS =
-  4 * 24 * 60 * 60 * 1000;
+const MATCHDAY_GAP_MS = 4 * 24 * 60 * 60 * 1000;
 
 // Conservative throttle because sync-live.js can also
 // be talking to Webflow at the same time.
@@ -45,41 +48,21 @@ const WEBFLOW_REQUEST_GAP_MS = 1100;
 const WEBFLOW_MAX_RETRIES = 8;
 
 const LIVE_STATUSES = new Set([
-  '1H',
-  '2H',
-  'HT',
-  'ET',
-  'BT',
-  'P',
-  'SUSP',
-  'INT',
-  'LIVE'
+  '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE'
 ]);
 
-const FINISHED_STATUSES = new Set([
-  'FT',
-  'AET',
-  'PEN'
-]);
+const FINISHED_STATUSES = new Set(['FT', 'AET', 'PEN']);
 
 function sleep(ms) {
-  return new Promise(resolve =>
-    setTimeout(resolve, ms)
-  );
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function normalizeName(value) {
   return String(value || '')
     .toLowerCase()
     .normalize('NFD')
-    .replace(
-      /[\u0300-\u036f]/g,
-      ''
-    )
-    .replace(
-      /[^a-z0-9]+/g,
-      ' '
-    )
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 }
 
@@ -87,70 +70,35 @@ function slugify(value) {
   return String(value || '')
     .toLowerCase()
     .normalize('NFD')
-    .replace(
-      /[\u0300-\u036f]/g,
-      ''
-    )
-    .replace(
-      /[^a-z0-9]+/g,
-      '-'
-    )
-    .replace(
-      /^-+|-+$/g,
-      ''
-    )
-    .replace(
-      /-+/g,
-      '-'
-    );
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-');
 }
 
-function getField(
-  item,
-  slug
-) {
-  return (
-    item &&
-    item.fieldData
-      ? item.fieldData[slug]
-      : null
+function getField(item, slug) {
+  return item && item.fieldData ? item.fieldData[slug] : null;
+}
+
+function isLeaguePhaseRound(round) {
+  return /(?:league\s*(stage|phase)|group\s*stage)/i.test(
+    String(round || '')
   );
 }
 
-function isLeaguePhaseRound(
-  round
-) {
-  return /(?:league\s*(stage|phase)|group\s*stage)/i
-    .test(
-      String(round || '')
-    );
-}
-
-function mapMatchStatus(
-  shortStatus
-) {
-  if (
-    FINISHED_STATUSES.has(
-      shortStatus
-    )
-  ) {
+function mapMatchStatus(shortStatus) {
+  if (FINISHED_STATUSES.has(shortStatus)) {
     return 'Played';
   }
 
-  if (
-    LIVE_STATUSES.has(
-      shortStatus
-    )
-  ) {
+  if (LIVE_STATUSES.has(shortStatus)) {
     return 'Live';
   }
 
   return 'Upcoming';
 }
 
-function countryToFlagCode(
-  countryName
-) {
+function countryToFlagCode(countryName) {
   const map = {
     England: 'gb-eng',
     Spain: 'es',
@@ -181,114 +129,54 @@ function countryToFlagCode(
 
   return (
     map[countryName] ||
-    String(
-      countryName || ''
-    )
+    String(countryName || '')
       .toLowerCase()
-      .replace(
-        /\s+/g,
-        '-'
-      )
+      .replace(/\s+/g, '-')
   );
 }
 
-function uniqueTeamsFromFixtures(
-  fixtures
-) {
-  const teams =
-    new Map();
+function uniqueTeamsFromFixtures(fixtures) {
+  const teams = new Map();
 
-  for (
-    const fixture
-    of fixtures
-  ) {
-    if (
-      fixture.teams?.home
-    ) {
-      teams.set(
-        String(
-          fixture.teams.home.id
-        ),
-        fixture.teams.home
-      );
+  for (const fixture of fixtures) {
+    if (fixture.teams?.home) {
+      teams.set(String(fixture.teams.home.id), fixture.teams.home);
     }
 
-    if (
-      fixture.teams?.away
-    ) {
-      teams.set(
-        String(
-          fixture.teams.away.id
-        ),
-        fixture.teams.away
-      );
+    if (fixture.teams?.away) {
+      teams.set(String(fixture.teams.away.id), fixture.teams.away);
     }
   }
 
-  return [
-    ...teams.values()
-  ];
+  return [...teams.values()];
 }
 
-function inferMatchweeks(
-  fixtures
-) {
-  const dated =
-    fixtures
-      .filter(
-        fixture =>
-          fixture.fixture?.date
-      )
-      .map(
-        fixture => ({
-          id:
-            String(
-              fixture.fixture.id
-            ),
+function inferMatchweeks(fixtures) {
+  const dated = fixtures
+    .filter(fixture => fixture.fixture?.date)
+    .map(fixture => ({
+      id: String(fixture.fixture.id),
+      time: new Date(fixture.fixture.date).getTime()
+    }))
+    .filter(item => Number.isFinite(item.time))
+    .sort((a, b) => a.time - b.time);
 
-          time:
-            new Date(
-              fixture.fixture.date
-            ).getTime()
-        })
-      )
-      .filter(
-        item =>
-          Number.isFinite(
-            item.time
-          )
-      )
-      .sort(
-        (a, b) =>
-          a.time - b.time
-      );
-
-  const byFixtureId =
-    new Map();
+  const byFixtureId = new Map();
 
   let matchweek = 0;
   let previousTime = null;
 
-  for (
-    const item
-    of dated
-  ) {
+  for (const item of dated) {
     if (
       previousTime === null ||
-      item.time -
-        previousTime >
-        MATCHDAY_GAP_MS
+      item.time - previousTime > MATCHDAY_GAP_MS
     ) {
       matchweek++;
     }
 
-    byFixtureId.set(
-      item.id,
-      matchweek
-    );
+    byFixtureId.set(item.id, matchweek);
 
-    previousTime =
-      item.time;
+    previousTime = item.time;
   }
 
   return {
@@ -301,128 +189,54 @@ function inferMatchweeks(
 // UCL LEAGUE PHASE FORM
 // ============================================================
 
-function buildLeaguePhaseFormMap(
-  fixtures
-) {
-  const formMap =
-    new Map();
+function buildLeaguePhaseFormMap(fixtures) {
+  const formMap = new Map();
 
-  const finishedFixtures =
-    fixtures
-      .filter(
-        fixture =>
-          FINISHED_STATUSES.has(
-            fixture.fixture
-              ?.status
-              ?.short
-          )
-      )
-      .sort(
-        (a, b) =>
-          new Date(
-            a.fixture.date
-          ).getTime() -
-          new Date(
-            b.fixture.date
-          ).getTime()
-      );
-
-  function addResult(
-    teamId,
-    result
-  ) {
-    const key =
-      String(teamId);
-
-    const current =
-      formMap.get(key) ||
-      [];
-
-    current.push(
-      result
+  const finishedFixtures = fixtures
+    .filter(fixture =>
+      FINISHED_STATUSES.has(fixture.fixture?.status?.short)
+    )
+    .sort(
+      (a, b) =>
+        new Date(a.fixture.date).getTime() -
+        new Date(b.fixture.date).getTime()
     );
 
-    formMap.set(
-      key,
-      current.slice(-5)
-    );
+  function addResult(teamId, result) {
+    const key = String(teamId);
+
+    const current = formMap.get(key) || [];
+
+    current.push(result);
+
+    formMap.set(key, current.slice(-5));
   }
 
-  for (
-    const fixture
-    of finishedFixtures
-  ) {
-    const homeId =
-      fixture.teams
-        ?.home
-        ?.id;
+  for (const fixture of finishedFixtures) {
+    const homeId = fixture.teams?.home?.id;
+    const awayId = fixture.teams?.away?.id;
 
-    const awayId =
-      fixture.teams
-        ?.away
-        ?.id;
-
-    const homeGoals =
-      Number(
-        fixture.goals
-          ?.home
-      );
-
-    const awayGoals =
-      Number(
-        fixture.goals
-          ?.away
-      );
+    const homeGoals = Number(fixture.goals?.home);
+    const awayGoals = Number(fixture.goals?.away);
 
     if (
       !homeId ||
       !awayId ||
-      !Number.isFinite(
-        homeGoals
-      ) ||
-      !Number.isFinite(
-        awayGoals
-      )
+      !Number.isFinite(homeGoals) ||
+      !Number.isFinite(awayGoals)
     ) {
       continue;
     }
 
-    if (
-      homeGoals >
-      awayGoals
-    ) {
-      addResult(
-        homeId,
-        'W'
-      );
-
-      addResult(
-        awayId,
-        'L'
-      );
-    } else if (
-      homeGoals <
-      awayGoals
-    ) {
-      addResult(
-        homeId,
-        'L'
-      );
-
-      addResult(
-        awayId,
-        'W'
-      );
+    if (homeGoals > awayGoals) {
+      addResult(homeId, 'W');
+      addResult(awayId, 'L');
+    } else if (homeGoals < awayGoals) {
+      addResult(homeId, 'L');
+      addResult(awayId, 'W');
     } else {
-      addResult(
-        homeId,
-        'D'
-      );
-
-      addResult(
-        awayId,
-        'D'
-      );
+      addResult(homeId, 'D');
+      addResult(awayId, 'D');
     }
   }
 
@@ -433,63 +247,39 @@ function buildLeaguePhaseFormMap(
 // API-FOOTBALL
 // ============================================================
 
-async function apiFetch(
-  path,
-  retries = 3
-) {
+async function apiFetch(path, retries = 3) {
   await sleep(250);
 
-  const res =
-    await fetch(
-      'https://v3.football.api-sports.io' +
-        path,
-      {
-        headers: {
-          'x-apisports-key':
-            API_FOOTBALL_KEY
-        }
+  const res = await fetch(
+    'https://v3.football.api-sports.io' + path,
+    {
+      headers: {
+        'x-apisports-key': API_FOOTBALL_KEY
       }
-    );
+    }
+  );
 
-  if (
-    res.status === 429 &&
-    retries > 0
-  ) {
+  if (res.status === 429 && retries > 0) {
     console.warn(
       'API-Football rate limited — waiting 30 seconds...'
     );
 
     await sleep(30000);
 
-    return apiFetch(
-      path,
-      retries - 1
-    );
+    return apiFetch(path, retries - 1);
   }
 
   if (!res.ok) {
     throw new Error(
-      'API-Football ' +
-        res.status +
-        ': ' +
-        await res.text()
+      'API-Football ' + res.status + ': ' + await res.text()
     );
   }
 
-  const data =
-    await res.json();
+  const data = await res.json();
 
-  if (
-    data.errors &&
-    Object.keys(
-      data.errors
-    ).length
-  ) {
+  if (data.errors && Object.keys(data.errors).length) {
     throw new Error(
-      'API-Football errors: ' +
-        JSON.stringify(
-          data.errors
-        )
+      'API-Football errors: ' + JSON.stringify(data.errors)
     );
   }
 
@@ -503,60 +293,32 @@ async function apiFetch(
 let lastWebflowRequestAt = 0;
 
 async function throttleWebflow() {
-  const elapsed =
-    Date.now() -
-    lastWebflowRequestAt;
+  const elapsed = Date.now() - lastWebflowRequestAt;
 
-  const wait =
-    WEBFLOW_REQUEST_GAP_MS -
-    elapsed;
+  const wait = WEBFLOW_REQUEST_GAP_MS - elapsed;
 
-  if (
-    wait > 0
-  ) {
+  if (wait > 0) {
     await sleep(wait);
   }
 
-  lastWebflowRequestAt =
-    Date.now();
+  lastWebflowRequestAt = Date.now();
 }
 
-function parseRetryAfter(
-  value
-) {
+function parseRetryAfter(value) {
   if (!value) {
     return null;
   }
 
-  const seconds =
-    Number(value);
+  const seconds = Number(value);
 
-  if (
-    Number.isFinite(
-      seconds
-    )
-  ) {
-    return Math.max(
-      1000,
-      Math.ceil(
-        seconds * 1000
-      )
-    );
+  if (Number.isFinite(seconds)) {
+    return Math.max(1000, Math.ceil(seconds * 1000));
   }
 
-  const timestamp =
-    Date.parse(value);
+  const timestamp = Date.parse(value);
 
-  if (
-    Number.isFinite(
-      timestamp
-    )
-  ) {
-    return Math.max(
-      1000,
-      timestamp -
-        Date.now()
-    );
+  if (Number.isFinite(timestamp)) {
+    return Math.max(1000, timestamp - Date.now());
   }
 
   return null;
@@ -565,53 +327,29 @@ function parseRetryAfter(
 async function wfRequest(
   url,
   options = {},
-  retries =
-    WEBFLOW_MAX_RETRIES
+  retries = WEBFLOW_MAX_RETRIES
 ) {
   await throttleWebflow();
 
-  const res =
-    await fetch(
-      url,
-      options
+  const res = await fetch(url, options);
+
+  if (res.status === 429 && retries > 0) {
+    const retryAfter = parseRetryAfter(
+      res.headers.get('retry-after')
     );
 
-  if (
-    res.status === 429 &&
-    retries > 0
-  ) {
-    const retryAfter =
-      parseRetryAfter(
-        res.headers.get(
-          'retry-after'
-        )
-      );
+    const attempt = WEBFLOW_MAX_RETRIES - retries;
 
-    const attempt =
-      WEBFLOW_MAX_RETRIES -
-      retries;
+    const fallbackWait = Math.min(
+      120000,
+      15000 * Math.pow(2, attempt)
+    );
 
-    const fallbackWait =
-      Math.min(
-        120000,
-        15000 *
-          Math.pow(
-            2,
-            attempt
-          )
-      );
-
-    const waitMs =
-      Math.max(
-        retryAfter || 0,
-        fallbackWait
-      );
+    const waitMs = Math.max(retryAfter || 0, fallbackWait);
 
     console.warn(
       'Webflow rate limited — waiting ' +
-        Math.ceil(
-          waitMs / 1000
-        ) +
+        Math.ceil(waitMs / 1000) +
         ' seconds before retry (' +
         (attempt + 1) +
         '/' +
@@ -621,109 +359,67 @@ async function wfRequest(
 
     await sleep(waitMs);
 
-    return wfRequest(
-      url,
-      options,
-      retries - 1
-    );
+    return wfRequest(url, options, retries - 1);
   }
 
   if (!res.ok) {
-    const text =
-      await res.text();
+    const text = await res.text();
 
-    if (
-      retries > 0 &&
-      res.status >= 500
-    ) {
-      const attempt =
-        WEBFLOW_MAX_RETRIES -
-        retries;
+    if (retries > 0 && res.status >= 500) {
+      const attempt = WEBFLOW_MAX_RETRIES - retries;
 
-      const waitMs =
-        Math.min(
-          30000,
-          3000 *
-            Math.pow(
-              2,
-              attempt
-            )
-        );
+      const waitMs = Math.min(
+        30000,
+        3000 * Math.pow(2, attempt)
+      );
 
       console.warn(
         'Webflow ' +
           res.status +
           ' — retrying in ' +
-          Math.ceil(
-            waitMs / 1000
-          ) +
+          Math.ceil(waitMs / 1000) +
           ' seconds...'
       );
 
       await sleep(waitMs);
 
-      return wfRequest(
-        url,
-        options,
-        retries - 1
-      );
+      return wfRequest(url, options, retries - 1);
     }
 
-    throw new Error(
-      'Webflow ' +
-        res.status +
-        ': ' +
-        text
-    );
+    throw new Error('Webflow ' + res.status + ': ' + text);
   }
 
-  if (
-    res.status === 204
-  ) {
+  if (res.status === 204) {
     return null;
   }
 
-  const text =
-    await res.text();
+  const text = await res.text();
 
   if (!text) {
     return null;
   }
 
   try {
-    return JSON.parse(
-      text
-    );
+    return JSON.parse(text);
   } catch {
     return text;
   }
 }
 
-function wfHeaders(
-  contentType = false
-) {
+function wfHeaders(contentType = false) {
   const headers = {
-    Authorization:
-      'Bearer ' +
-      WEBFLOW_TOKEN,
-
-    accept:
-      'application/json'
+    Authorization: 'Bearer ' + WEBFLOW_TOKEN,
+    accept: 'application/json'
   };
 
   if (contentType) {
-    headers[
-      'content-type'
-    ] =
-      'application/json';
+    headers['content-type'] = 'application/json';
   }
 
   return headers;
 }
 
-async function wfGetAllItems(
-  collectionId
-) {
+async function wfGetAllItems(collectionId) {
   const items = [];
 
   const limit = 100;
@@ -731,33 +427,25 @@ async function wfGetAllItems(
   let offset = 0;
 
   while (true) {
-    const data =
-      await wfRequest(
-        'https://api.webflow.com/v2/collections/' +
-          collectionId +
-          '/items?limit=' +
-          limit +
-          '&offset=' +
-          offset,
-        {
-          headers:
-            wfHeaders()
-        }
-      );
-
-    items.push(
-      ...(data.items || [])
+    const data = await wfRequest(
+      'https://api.webflow.com/v2/collections/' +
+        collectionId +
+        '/items?limit=' +
+        limit +
+        '&offset=' +
+        offset,
+      {
+        headers: wfHeaders()
+      }
     );
 
-    const total =
-      data.pagination
-        ? data.pagination.total
-        : items.length;
+    items.push(...(data.items || []));
 
-    if (
-      items.length >=
-      total
-    ) {
+    const total = data.pagination
+      ? data.pagination.total
+      : items.length;
+
+    if (items.length >= total) {
       break;
     }
 
@@ -767,45 +455,29 @@ async function wfGetAllItems(
   return items;
 }
 
-async function wfGetCollection(
-  collectionId
-) {
+async function wfGetCollection(collectionId) {
   return wfRequest(
-    'https://api.webflow.com/v2/collections/' +
-      collectionId,
+    'https://api.webflow.com/v2/collections/' + collectionId,
     {
-      headers:
-        wfHeaders()
+      headers: wfHeaders()
     }
   );
 }
 
-async function wfGetItem(
-  collectionId,
-  itemId
-) {
+async function wfGetItem(collectionId, itemId) {
   return wfRequest(
     'https://api.webflow.com/v2/collections/' +
       collectionId +
       '/items/' +
       itemId,
     {
-      headers:
-        wfHeaders()
+      headers: wfHeaders()
     }
   );
 }
 
-async function wfUpdateItem(
-  collectionId,
-  itemId,
-  fieldData
-) {
-  if (
-    !Object.keys(
-      fieldData
-    ).length
-  ) {
+async function wfUpdateItem(collectionId, itemId, fieldData) {
+  if (!Object.keys(fieldData).length) {
     return null;
   }
 
@@ -815,137 +487,87 @@ async function wfUpdateItem(
       '/items/' +
       itemId,
     {
-      method:
-        'PATCH',
+      method: 'PATCH',
 
-      headers:
-        wfHeaders(true),
+      headers: wfHeaders(true),
 
-      body:
-        JSON.stringify({
-          isArchived: false,
-          isDraft: false,
-          fieldData
-        })
+      body: JSON.stringify({
+        isArchived: false,
+        isDraft: false,
+        fieldData
+      })
     }
   );
 }
 
-async function wfCreateItem(
-  collectionId,
-  fieldData
-) {
+async function wfCreateItem(collectionId, fieldData) {
   return wfRequest(
     'https://api.webflow.com/v2/collections/' +
       collectionId +
       '/items',
     {
-      method:
-        'POST',
+      method: 'POST',
 
-      headers:
-        wfHeaders(true),
+      headers: wfHeaders(true),
 
-      body:
-        JSON.stringify({
-          isArchived: false,
-          isDraft: false,
-          fieldData
-        })
+      body: JSON.stringify({
+        isArchived: false,
+        isDraft: false,
+        fieldData
+      })
     }
   );
 }
 
-async function wfPublishItems(
-  collectionId,
-  itemIds
-) {
-  const uniqueIds = [
-    ...new Set(itemIds)
-  ].filter(Boolean);
+async function wfPublishItems(collectionId, itemIds) {
+  const uniqueIds = [...new Set(itemIds)].filter(Boolean);
 
-  if (
-    !uniqueIds.length
-  ) {
+  if (!uniqueIds.length) {
     return;
   }
 
-  for (
-    let i = 0;
-    i < uniqueIds.length;
-    i += 100
-  ) {
-    const batch =
-      uniqueIds.slice(
-        i,
-        i + 100
-      );
+  for (let i = 0; i < uniqueIds.length; i += 100) {
+    const batch = uniqueIds.slice(i, i + 100);
 
     await wfRequest(
       'https://api.webflow.com/v2/collections/' +
         collectionId +
         '/items/publish',
       {
-        method:
-          'POST',
+        method: 'POST',
 
-        headers:
-          wfHeaders(true),
+        headers: wfHeaders(true),
 
-        body:
-          JSON.stringify({
-            itemIds: batch
-          })
+        body: JSON.stringify({
+          itemIds: batch
+        })
       }
     );
   }
 }
 
-async function wfUnpublishItems(
-  collectionId,
-  itemIds
-) {
-  const uniqueIds = [
-    ...new Set(itemIds)
-  ].filter(Boolean);
+async function wfUnpublishItems(collectionId, itemIds) {
+  const uniqueIds = [...new Set(itemIds)].filter(Boolean);
 
-  if (
-    !uniqueIds.length
-  ) {
+  if (!uniqueIds.length) {
     return;
   }
 
-  for (
-    let i = 0;
-    i < uniqueIds.length;
-    i += 100
-  ) {
-    const batch =
-      uniqueIds.slice(
-        i,
-        i + 100
-      );
+  for (let i = 0; i < uniqueIds.length; i += 100) {
+    const batch = uniqueIds.slice(i, i + 100);
 
     await wfRequest(
       'https://api.webflow.com/v2/collections/' +
         collectionId +
         '/items/live',
       {
-        method:
-          'DELETE',
+        method: 'DELETE',
 
-        headers:
-          wfHeaders(true),
+        headers: wfHeaders(true),
 
-        body:
-          JSON.stringify({
-            items:
-              batch.map(
-                id => ({
-                  id
-                })
-              )
-          })
+        body: JSON.stringify({
+          items: batch.map(id => ({ id }))
+        })
       }
     );
   }
@@ -955,91 +577,44 @@ async function wfUnpublishItems(
 // WEBFLOW CHANGE DETECTION
 // ============================================================
 
-function comparableValue(
-  value
-) {
-  if (
-    value === undefined ||
-    value === null
-  ) {
+function comparableValue(value) {
+  if (value === undefined || value === null) {
     return '';
   }
 
-  if (
-    typeof value ===
-      'object' &&
-    !Array.isArray(value)
-  ) {
+  if (typeof value === 'object' && !Array.isArray(value)) {
     // For Webflow image fields the URL is what matters.
     // Webflow may transform/omit alt metadata, so don't
     // generate a PATCH every run just because of alt text.
-    if (
-      'url' in value
-    ) {
-      return String(
-        value.url || ''
-      );
+    if ('url' in value) {
+      return String(value.url || '');
     }
 
-    return JSON.stringify(
-      value
-    );
+    return JSON.stringify(value);
   }
 
-  if (
-    Array.isArray(value)
-  ) {
-    return JSON.stringify(
-      value
-    );
+  if (Array.isArray(value)) {
+    return JSON.stringify(value);
   }
 
   return String(value);
 }
 
-function valuesEqual(
-  current,
-  next
-) {
-  return (
-    comparableValue(
-      current
-    ) ===
-    comparableValue(
-      next
-    )
-  );
+function valuesEqual(current, next) {
+  return comparableValue(current) === comparableValue(next);
 }
 
-function getChangedFields(
-  itemOrFieldData,
-  proposedFieldData
-) {
+function getChangedFields(itemOrFieldData, proposedFieldData) {
   const current =
-    itemOrFieldData
-      ?.fieldData ||
+    itemOrFieldData?.fieldData ||
     itemOrFieldData ||
     {};
 
   const changed = {};
 
-  for (
-    const [
-      key,
-      nextValue
-    ]
-    of Object.entries(
-      proposedFieldData
-    )
-  ) {
-    if (
-      !valuesEqual(
-        current[key],
-        nextValue
-      )
-    ) {
-      changed[key] =
-        nextValue;
+  for (const [key, nextValue] of Object.entries(proposedFieldData)) {
+    if (!valuesEqual(current[key], nextValue)) {
+      changed[key] = nextValue;
     }
   }
 
@@ -1050,179 +625,87 @@ function getChangedFields(
 // TEAM LOOKUP
 // ============================================================
 
-function buildTeamLookup(
-  items
-) {
-  const byApiId =
-    new Map();
+function buildTeamLookup(items) {
+  const byApiId = new Map();
+  const byName = new Map();
 
-  const byName =
-    new Map();
-
-  for (
-    const item
-    of items
-  ) {
-    const apiId =
-      getField(
-        item,
-        'api-team-id'
-      );
-
-    const name =
-      getField(
-        item,
-        'name'
-      );
+  for (const item of items) {
+    const apiId = getField(item, 'api-team-id');
+    const name = getField(item, 'name');
 
     if (apiId) {
-      const key =
-        String(apiId);
+      const key = String(apiId);
 
-      if (
-        !byApiId.has(
-          key
-        )
-      ) {
-        byApiId.set(
-          key,
-          []
-        );
+      if (!byApiId.has(key)) {
+        byApiId.set(key, []);
       }
 
-      byApiId
-        .get(key)
-        .push(item);
+      byApiId.get(key).push(item);
     }
 
     if (name) {
-      const key =
-        normalizeName(
-          name
-        );
+      const key = normalizeName(name);
 
-      if (
-        !byName.has(
-          key
-        )
-      ) {
-        byName.set(
-          key,
-          []
-        );
+      if (!byName.has(key)) {
+        byName.set(key, []);
       }
 
-      byName
-        .get(key)
-        .push(item);
+      byName.get(key).push(item);
     }
   }
 
-  return {
-    byApiId,
-    byName
-  };
+  return { byApiId, byName };
 }
 
-function resolveTeam(
-  apiTeam,
-  lookup
-) {
+function resolveTeam(apiTeam, lookup) {
   if (!apiTeam) {
     return null;
   }
 
   const idMatches =
-    lookup.byApiId.get(
-      String(
-        apiTeam.id
-      )
-    ) || [];
+    lookup.byApiId.get(String(apiTeam.id)) || [];
 
-  if (
-    idMatches.length === 1
-  ) {
+  if (idMatches.length === 1) {
     return {
-      item:
-        idMatches[0],
-
-      method:
-        'api-team-id'
+      item: idMatches[0],
+      method: 'api-team-id'
     };
   }
 
-  if (
-    idMatches.length > 1
-  ) {
-    const exactName =
-      idMatches.filter(
-        item =>
-          normalizeName(
-            getField(
-              item,
-              'name'
-            )
-          ) ===
-          normalizeName(
-            apiTeam.name
-          )
-      );
+  if (idMatches.length > 1) {
+    const exactName = idMatches.filter(
+      item =>
+        normalizeName(getField(item, 'name')) ===
+        normalizeName(apiTeam.name)
+    );
 
-    if (
-      exactName.length === 1
-    ) {
+    if (exactName.length === 1) {
       return {
-        item:
-          exactName[0],
-
-        method:
-          'api-team-id+name'
+        item: exactName[0],
+        method: 'api-team-id+name'
       };
     }
   }
 
   const nameMatches =
-    lookup.byName.get(
-      normalizeName(
-        apiTeam.name
-      )
-    ) || [];
+    lookup.byName.get(normalizeName(apiTeam.name)) || [];
 
-  if (
-    nameMatches.length === 1
-  ) {
+  if (nameMatches.length === 1) {
     return {
-      item:
-        nameMatches[0],
-
-      method:
-        'exact-name'
+      item: nameMatches[0],
+      method: 'exact-name'
     };
   }
 
   return null;
 }
 
-function buildApiTeamMetadataMap(
-  teamsData
-) {
-  const map =
-    new Map();
+function buildApiTeamMetadataMap(teamsData) {
+  const map = new Map();
 
-  for (
-    const entry
-    of teamsData.response ||
-      []
-  ) {
-    if (
-      entry.team?.id
-    ) {
-      map.set(
-        String(
-          entry.team.id
-        ),
-        entry
-      );
+  for (const entry of teamsData.response || []) {
+    if (entry.team?.id) {
+      map.set(String(entry.team.id), entry);
     }
   }
 
@@ -1233,28 +716,14 @@ function buildApiTeamMetadataMap(
 // TEAMS
 // ============================================================
 
-async function syncTeams(
-  finalTeams,
-  teamsData
-) {
-  console.log(
-    '\n=== TEAMS ==='
-  );
+async function syncTeams(finalTeams, teamsData) {
+  console.log('\n=== TEAMS ===');
 
-  let allTeams =
-    await wfGetAllItems(
-      WF.TEAMS
-    );
+  let allTeams = await wfGetAllItems(WF.TEAMS);
 
-  let lookup =
-    buildTeamLookup(
-      allTeams
-    );
+  let lookup = buildTeamLookup(allTeams);
 
-  const apiMetadata =
-    buildApiTeamMetadataMap(
-      teamsData
-    );
+  const apiMetadata = buildApiTeamMetadataMap(teamsData);
 
   const publishIds = [];
 
@@ -1263,22 +732,10 @@ async function syncTeams(
   let unchanged = 0;
   let created = 0;
 
-  for (
-    const apiTeam
-    of finalTeams
-  ) {
-    const match =
-      resolveTeam(
-        apiTeam,
-        lookup
-      );
+  for (const apiTeam of finalTeams) {
+    const match = resolveTeam(apiTeam, lookup);
 
-    const meta =
-      apiMetadata.get(
-        String(
-          apiTeam.id
-        )
-      );
+    const meta = apiMetadata.get(String(apiTeam.id));
 
     if (match) {
       reused++;
@@ -1286,96 +743,49 @@ async function syncTeams(
       // IMPORTANT:
       // Never change existing Team item's league.
       const proposed = {
-        'api-team-id':
-          String(
-            apiTeam.id
-          )
+        'api-team-id': String(apiTeam.id)
       };
 
-      if (
-        meta?.team?.code
-      ) {
-        proposed[
-          'short-name'
-        ] =
-          meta.team.code;
+      if (meta?.team?.code) {
+        proposed['short-name'] = meta.team.code;
       }
 
-      if (
-        meta?.team?.country
-      ) {
-        proposed.country =
-          meta.team.country;
+      if (meta?.team?.country) {
+        proposed.country = meta.team.country;
       }
 
-      if (
-        meta?.team?.founded != null
-      ) {
-        proposed.founded =
-          meta.team.founded;
+      if (meta?.team?.founded != null) {
+        proposed.founded = meta.team.founded;
       }
 
-      if (
-        meta?.venue?.city
-      ) {
-        proposed.city =
-          meta.venue.city;
+      if (meta?.venue?.city) {
+        proposed.city = meta.venue.city;
       }
 
-      if (
-        meta?.venue?.name
-      ) {
-        proposed.stadium =
-          meta.venue.name;
+      if (meta?.venue?.name) {
+        proposed.stadium = meta.venue.name;
       }
 
-      if (
-        meta?.team?.logo
-      ) {
+      if (meta?.team?.logo) {
         proposed.badge = {
-          url:
-            meta.team.logo,
-
-          alt:
-            getField(
-              match.item,
-              'name'
-            ) +
-            ' badge'
+          url: meta.team.logo,
+          alt: getField(match.item, 'name') + ' badge'
         };
       }
 
-      if (
-        meta?.team?.country
-      ) {
+      if (meta?.team?.country) {
         proposed.flag =
           'https://media.api-sports.io/flags/' +
-          countryToFlagCode(
-            meta.team.country
-          ) +
+          countryToFlagCode(meta.team.country) +
           '.svg';
       }
 
-      const changed =
-        getChangedFields(
-          match.item,
-          proposed
-        );
+      const changed = getChangedFields(match.item, proposed);
 
-      if (
-        Object.keys(
-          changed
-        ).length
-      ) {
-        await wfUpdateItem(
-          WF.TEAMS,
-          match.item.id,
-          changed
-        );
+      if (Object.keys(changed).length) {
+        await wfUpdateItem(WF.TEAMS, match.item.id, changed);
 
-        publishIds.push(
-          match.item.id
-        );
+        publishIds.push(match.item.id);
 
         updated++;
 
@@ -1383,14 +793,9 @@ async function syncTeams(
           'UPDATE: ' +
             apiTeam.name +
             ' -> ' +
-            getField(
-              match.item,
-              'name'
-            ) +
+            getField(match.item, 'name') +
             ' [' +
-            Object.keys(
-              changed
-            ).join(', ') +
+            Object.keys(changed).join(', ') +
             ']'
         );
       } else {
@@ -1400,10 +805,7 @@ async function syncTeams(
           'REUSE: ' +
             apiTeam.name +
             ' -> ' +
-            getField(
-              match.item,
-              'name'
-            ) +
+            getField(match.item, 'name') +
             ' [' +
             match.method +
             ', no changes]'
@@ -1421,100 +823,55 @@ async function syncTeams(
     }
 
     const fieldData = {
-      name:
-        meta.team.name,
+      name: meta.team.name,
 
-      slug:
-        slugify(
-          meta.team.name
-        ),
+      slug: slugify(meta.team.name),
 
       'short-name':
         meta.team.code ||
-        meta.team.name
-          .slice(0, 3)
-          .toUpperCase(),
+        meta.team.name.slice(0, 3).toUpperCase(),
 
-      league:
-        UCL.webflow_id,
+      league: UCL.webflow_id,
 
-      'api-team-id':
-        String(
-          meta.team.id
-        ),
+      'api-team-id': String(meta.team.id),
 
-      country:
-        meta.team.country ||
-        '',
+      country: meta.team.country || '',
 
-      city:
-        meta.venue?.city ||
-        '',
+      city: meta.venue?.city || '',
 
-      stadium:
-        meta.venue?.name ||
-        '',
+      stadium: meta.venue?.name || '',
 
-      founded:
-        meta.team.founded ||
-        null
+      founded: meta.team.founded || null
     };
 
-    if (
-      meta.team.logo
-    ) {
+    if (meta.team.logo) {
       fieldData.badge = {
-        url:
-          meta.team.logo,
-
-        alt:
-          meta.team.name +
-          ' badge'
+        url: meta.team.logo,
+        alt: meta.team.name + ' badge'
       };
     }
 
-    if (
-      meta.team.country
-    ) {
+    if (meta.team.country) {
       fieldData.flag =
         'https://media.api-sports.io/flags/' +
-        countryToFlagCode(
-          meta.team.country
-        ) +
+        countryToFlagCode(meta.team.country) +
         '.svg';
     }
 
-    const newItem =
-      await wfCreateItem(
-        WF.TEAMS,
-        fieldData
-      );
+    const newItem = await wfCreateItem(WF.TEAMS, fieldData);
 
-    publishIds.push(
-      newItem.id
-    );
+    publishIds.push(newItem.id);
 
     created++;
 
-    console.log(
-      'CREATE: ' +
-        meta.team.name
-    );
+    console.log('CREATE: ' + meta.team.name);
 
-    allTeams.push(
-      newItem
-    );
+    allTeams.push(newItem);
 
-    lookup =
-      buildTeamLookup(
-        allTeams
-      );
+    lookup = buildTeamLookup(allTeams);
   }
 
-  await wfPublishItems(
-    WF.TEAMS,
-    publishIds
-  );
+  await wfPublishItems(WF.TEAMS, publishIds);
 
   console.log(
     'Teams complete: ' +
@@ -1528,15 +885,9 @@ async function syncTeams(
       ' created'
   );
 
-  allTeams =
-    await wfGetAllItems(
-      WF.TEAMS
-    );
+  allTeams = await wfGetAllItems(WF.TEAMS);
 
-  lookup =
-    buildTeamLookup(
-      allTeams
-    );
+  lookup = buildTeamLookup(allTeams);
 
   return {
     allTeams,
@@ -1548,27 +899,12 @@ async function syncTeams(
 // STANDINGS
 // ============================================================
 
-function getApiStandingsTable(
-  standingsData
-) {
+function getApiStandingsTable(standingsData) {
   const groups =
-    standingsData
-      .response?.[0]
-      ?.league
-      ?.standings ||
-    [];
+    standingsData.response?.[0]?.league?.standings || [];
 
-  for (
-    const group
-    of groups
-  ) {
-    if (
-      Array.isArray(
-        group
-      ) &&
-      group.length ===
-        EXPECTED_TEAMS
-    ) {
+  for (const group of groups) {
+    if (Array.isArray(group) && group.length === EXPECTED_TEAMS) {
       return group;
     }
   }
@@ -1582,24 +918,14 @@ async function syncStandings(
   standingsData,
   leagueFixtures
 ) {
-  console.log(
-    '\n=== STANDINGS ==='
-  );
+  console.log('\n=== STANDINGS ===');
 
   const leaguePhaseFormMap =
-    buildLeaguePhaseFormMap(
-      leagueFixtures
-    );
+    buildLeaguePhaseFormMap(leagueFixtures);
 
-  const finishedLeaguePhase =
-    leagueFixtures.filter(
-      fixture =>
-        FINISHED_STATUSES.has(
-          fixture.fixture
-            ?.status
-            ?.short
-        )
-    );
+  const finishedLeaguePhase = leagueFixtures.filter(fixture =>
+    FINISHED_STATUSES.has(fixture.fixture?.status?.short)
+  );
 
   console.log(
     'UCL League Phase form calculated from ' +
@@ -1607,109 +933,65 @@ async function syncStandings(
       ' finished League Phase fixtures.'
   );
 
-  const allStandings =
-    await wfGetAllItems(
-      WF.STANDINGS
-    );
+  const allStandings = await wfGetAllItems(WF.STANDINGS);
 
-  const currentUclStandings =
-    allStandings.filter(
-      item =>
-        getField(
-          item,
-          'league'
-        ) ===
-        UCL.webflow_id
-    );
+  const currentUclStandings = allStandings.filter(
+    item => getField(item, 'league') === UCL.webflow_id
+  );
 
-  const existingByTeamRef =
-    new Map();
+  const existingByTeamRef = new Map();
 
-  for (
-    const item
-    of currentUclStandings
-  ) {
-    const teamRef =
-      getField(
-        item,
-        'team'
-      );
+  for (const item of currentUclStandings) {
+    const teamRef = getField(item, 'team');
 
-    if (
-      teamRef &&
-      !existingByTeamRef.has(
-        teamRef
-      )
-    ) {
-      existingByTeamRef.set(
-        teamRef,
-        item
-      );
+    if (teamRef && !existingByTeamRef.has(teamRef)) {
+      existingByTeamRef.set(teamRef, item);
     }
   }
 
-  const apiTable =
-    getApiStandingsTable(
-      standingsData
-    );
+  const apiTable = getApiStandingsTable(standingsData);
 
   const rows = [];
 
-  if (
-    apiTable.length ===
-    EXPECTED_TEAMS
-  ) {
-    console.log(
-      'Using live API UCL standings: 36 rows'
-    );
+  if (apiTable.length === EXPECTED_TEAMS) {
+    console.log('Using live API UCL standings: 36 rows');
 
-    rows.push(
-      ...apiTable
-    );
+    rows.push(...apiTable);
   } else {
     console.log(
       'No 36-row API standings yet — writing safe zeroed League Phase table'
     );
 
-    const sortedTeams =
-      [...finalTeams]
-        .sort(
-          (a, b) =>
-            a.name.localeCompare(
-              b.name
-            )
-        );
-
-    sortedTeams.forEach(
-      (team, index) => {
-        rows.push({
-          team,
-
-          rank:
-            index + 1,
-
-          all: {
-            played: 0,
-            win: 0,
-            draw: 0,
-            lose: 0,
-
-            goals: {
-              for: 0,
-              against: 0
-            }
-          },
-
-          goalsDiff: 0,
-          points: 0,
-          form: null
-        });
-      }
+    const sortedTeams = [...finalTeams].sort((a, b) =>
+      a.name.localeCompare(b.name)
     );
+
+    sortedTeams.forEach((team, index) => {
+      rows.push({
+        team,
+
+        rank: index + 1,
+
+        all: {
+          played: 0,
+          win: 0,
+          draw: 0,
+          lose: 0,
+
+          goals: {
+            for: 0,
+            against: 0
+          }
+        },
+
+        goalsDiff: 0,
+        points: 0,
+        form: null
+      });
+    });
   }
 
-  const currentTeamRefs =
-    new Set();
+  const currentTeamRefs = new Set();
 
   const publishIds = [];
 
@@ -1717,230 +999,118 @@ async function syncStandings(
   let unchanged = 0;
   let created = 0;
 
-  for (
-    const entry
-    of rows
-  ) {
-    const teamMatch =
-      resolveTeam(
-        entry.team,
-        teamLookup
-      );
+  for (const entry of rows) {
+    const teamMatch = resolveTeam(entry.team, teamLookup);
 
     if (!teamMatch) {
       throw new Error(
-        'Cannot resolve UCL standing team: ' +
-          entry.team.name
+        'Cannot resolve UCL standing team: ' + entry.team.name
       );
     }
 
-    const wfTeam =
-      teamMatch.item;
+    const wfTeam = teamMatch.item;
 
-    currentTeamRefs.add(
-      wfTeam.id
-    );
+    currentTeamRefs.add(wfTeam.id);
 
-    const all =
-      entry.all ||
-      {};
+    const all = entry.all || {};
 
-    const goals =
-      all.goals ||
-      {};
+    const goals = all.goals || {};
 
-    const uclForm =
-      (
-        leaguePhaseFormMap.get(
-          String(
-            entry.team.id
-          )
-        ) || []
-      ).join('');
+    const uclForm = (
+      leaguePhaseFormMap.get(String(entry.team.id)) || []
+    ).join('');
+
+    const standingSlug =
+      slugify(getField(wfTeam, 'name')) + '-ucl-standing';
 
     const fieldData = {
-      name:
-        getField(
-          wfTeam,
-          'name'
-        ),
+      name: getField(wfTeam, 'name'),
 
-      slug:
-        slugify(
-          getField(
-            wfTeam,
-            'name'
-          )
-        ) +
-        '-ucl-standing',
+      slug: standingSlug,
 
-      team:
-        wfTeam.id,
+      // PAGE URL (added): Link field used by the /site-archive page.
+      'page-url': STANDINGS_PAGE_BASE + standingSlug,
 
-      league:
-        UCL.webflow_id,
+      team: wfTeam.id,
 
-      position:
-        Number(
-          entry.rank ||
-          0
-        ),
+      league: UCL.webflow_id,
 
-      played:
-        Number(
-          all.played ||
-          0
-        ),
+      position: Number(entry.rank || 0),
 
-      won:
-        Number(
-          all.win ||
-          0
-        ),
+      played: Number(all.played || 0),
 
-      drawn:
-        Number(
-          all.draw ||
-          0
-        ),
+      won: Number(all.win || 0),
 
-      lost:
-        Number(
-          all.lose ||
-          0
-        ),
+      drawn: Number(all.draw || 0),
 
-      'goals-for':
-        Number(
-          goals.for ||
-          0
-        ),
+      lost: Number(all.lose || 0),
 
-      'goals-against':
-        Number(
-          goals.against ||
-          0
-        ),
+      'goals-for': Number(goals.for || 0),
 
-      'goal-difference':
-        Number(
-          entry.goalsDiff ||
-          0
-        ),
+      'goals-against': Number(goals.against || 0),
 
-      points:
-        Number(
-          entry.points ||
-          0
-        ),
+      'goal-difference': Number(entry.goalsDiff || 0),
+
+      points: Number(entry.points || 0),
 
       // IMPORTANT:
       // Never use entry.form here.
       // This is ONLY UCL League Phase form.
-      form:
-        uclForm
+      form: uclForm
     };
 
-    const existing =
-      existingByTeamRef.get(
-        wfTeam.id
-      );
+    const existing = existingByTeamRef.get(wfTeam.id);
 
     if (existing) {
-      const changed =
-        getChangedFields(
-          existing,
-          fieldData
-        );
+      const changed = getChangedFields(existing, fieldData);
 
-      if (
-        Object.keys(
-          changed
-        ).length
-      ) {
-        await wfUpdateItem(
-          WF.STANDINGS,
-          existing.id,
-          changed
-        );
+      if (Object.keys(changed).length) {
+        await wfUpdateItem(WF.STANDINGS, existing.id, changed);
 
-        publishIds.push(
-          existing.id
-        );
+        publishIds.push(existing.id);
 
         updated++;
 
         console.log(
           'STANDING UPDATE: ' +
-            getField(
-              wfTeam,
-              'name'
-            ) +
+            getField(wfTeam, 'name') +
             ' [' +
-            Object.keys(
-              changed
-            ).join(', ') +
+            Object.keys(changed).join(', ') +
             ']'
         );
       } else {
         unchanged++;
       }
     } else {
-      const newItem =
-        await wfCreateItem(
-          WF.STANDINGS,
-          fieldData
-        );
+      const newItem = await wfCreateItem(WF.STANDINGS, fieldData);
 
-      publishIds.push(
-        newItem.id
-      );
+      publishIds.push(newItem.id);
 
       created++;
     }
   }
 
-  await wfPublishItems(
-    WF.STANDINGS,
-    publishIds
-  );
+  await wfPublishItems(WF.STANDINGS, publishIds);
 
-  const staleLiveIds =
-    currentUclStandings
-      .filter(
-        item => {
-          const teamRef =
-            getField(
-              item,
-              'team'
-            );
+  const staleLiveIds = currentUclStandings
+    .filter(item => {
+      const teamRef = getField(item, 'team');
 
-          return (
-            teamRef &&
-            !currentTeamRefs.has(
-              teamRef
-            ) &&
-            !item.isDraft
-          );
-        }
-      )
-      .map(
-        item =>
-          item.id
+      return (
+        teamRef &&
+        !currentTeamRefs.has(teamRef) &&
+        !item.isDraft
       );
+    })
+    .map(item => item.id);
 
-  if (
-    staleLiveIds.length
-  ) {
+  if (staleLiveIds.length) {
     console.log(
       'Unpublishing stale old UCL standings: ' +
         staleLiveIds.length
     );
 
-    await wfUnpublishItems(
-      WF.STANDINGS,
-      staleLiveIds
-    );
+    await wfUnpublishItems(WF.STANDINGS, staleLiveIds);
   }
 
   console.log(
@@ -1961,38 +1131,20 @@ async function syncStandings(
 // ============================================================
 
 async function unpublishUclFixturesUntilScheduleReady() {
-  console.log(
-    '\n=== FIXTURES SAFETY ==='
+  console.log('\n=== FIXTURES SAFETY ===');
+
+  const allMatches = await wfGetAllItems(WF.MATCHES);
+
+  const liveUclMatches = allMatches.filter(
+    item =>
+      getField(item, 'league') === UCL.webflow_id &&
+      !item.isDraft
   );
 
-  const allMatches =
-    await wfGetAllItems(
-      WF.MATCHES
-    );
+  const ids = liveUclMatches.map(item => item.id);
 
-  const liveUclMatches =
-    allMatches.filter(
-      item =>
-        getField(
-          item,
-          'league'
-        ) ===
-          UCL.webflow_id &&
-        !item.isDraft
-    );
-
-  const ids =
-    liveUclMatches.map(
-      item =>
-        item.id
-    );
-
-  if (
-    !ids.length
-  ) {
-    console.log(
-      'No live UCL fixtures to unpublish.'
-    );
+  if (!ids.length) {
+    console.log('No live UCL fixtures to unpublish.');
 
     return;
   }
@@ -2003,10 +1155,7 @@ async function unpublishUclFixturesUntilScheduleReady() {
       ' UCL fixtures.'
   );
 
-  await wfUnpublishItems(
-    WF.MATCHES,
-    ids
-  );
+  await wfUnpublishItems(WF.MATCHES, ids);
 
   console.log(
     'Placeholder UCL fixtures removed from live site.'
@@ -2022,60 +1171,27 @@ async function syncMatches(
   teamLookup,
   matchweekInfo
 ) {
-  console.log(
-    '\n=== MATCHES ==='
+  console.log('\n=== MATCHES ===');
+
+  const allMatches = await wfGetAllItems(WF.MATCHES);
+
+  const uclMatches = allMatches.filter(
+    item => getField(item, 'league') === UCL.webflow_id
   );
 
-  const allMatches =
-    await wfGetAllItems(
-      WF.MATCHES
-    );
+  const existingByApiId = new Map();
 
-  const uclMatches =
-    allMatches.filter(
-      item =>
-        getField(
-          item,
-          'league'
-        ) ===
-        UCL.webflow_id
-    );
+  for (const item of uclMatches) {
+    const apiId = getField(item, 'api-fixture-id');
 
-  const existingByApiId =
-    new Map();
-
-  for (
-    const item
-    of uclMatches
-  ) {
-    const apiId =
-      getField(
-        item,
-        'api-fixture-id'
-      );
-
-    if (
-      apiId &&
-      !existingByApiId.has(
-        String(apiId)
-      )
-    ) {
-      existingByApiId.set(
-        String(apiId),
-        item
-      );
+    if (apiId && !existingByApiId.has(String(apiId))) {
+      existingByApiId.set(String(apiId), item);
     }
   }
 
-  const currentFixtureIds =
-    new Set(
-      leagueFixtures.map(
-        fixture =>
-          String(
-            fixture.fixture.id
-          )
-      )
-    );
+  const currentFixtureIds = new Set(
+    leagueFixtures.map(fixture => String(fixture.fixture.id))
+  );
 
   const publishIds = [];
 
@@ -2083,233 +1199,110 @@ async function syncMatches(
   let unchanged = 0;
   let created = 0;
 
-  for (
-    const fixture
-    of leagueFixtures
-  ) {
-    const home =
-      resolveTeam(
-        fixture.teams?.home,
-        teamLookup
-      );
+  for (const fixture of leagueFixtures) {
+    const home = resolveTeam(fixture.teams?.home, teamLookup);
 
-    const away =
-      resolveTeam(
-        fixture.teams?.away,
-        teamLookup
-      );
+    const away = resolveTeam(fixture.teams?.away, teamLookup);
 
-    if (
-      !home ||
-      !away
-    ) {
+    if (!home || !away) {
       throw new Error(
         'Cannot resolve fixture teams: ' +
-          (
-            fixture.teams
-              ?.home
-              ?.name ||
-            '?'
-          ) +
+          (fixture.teams?.home?.name || '?') +
           ' vs ' +
-          (
-            fixture.teams
-              ?.away
-              ?.name ||
-            '?'
-          )
+          (fixture.teams?.away?.name || '?')
       );
     }
 
-    const fixtureId =
-      String(
-        fixture.fixture.id
-      );
+    const fixtureId = String(fixture.fixture.id);
 
     const matchweek =
-      matchweekInfo
-        .byFixtureId
-        .get(
-          fixtureId
-        ) ||
-      null;
+      matchweekInfo.byFixtureId.get(fixtureId) || null;
 
-    const homeName =
-      getField(
-        home.item,
-        'name'
-      );
+    const homeName = getField(home.item, 'name');
 
-    const awayName =
-      getField(
-        away.item,
-        'name'
-      );
+    const awayName = getField(away.item, 'name');
 
     const fieldData = {
-      name:
-        homeName +
-        ' vs ' +
-        awayName,
+      name: homeName + ' vs ' + awayName,
 
       slug:
-        slugify(
-          homeName
-        ) +
+        slugify(homeName) +
         '-vs-' +
-        slugify(
-          awayName
-        ) +
+        slugify(awayName) +
         '-' +
         fixtureId,
 
-      league:
-        UCL.webflow_id,
+      league: UCL.webflow_id,
 
-      'home-team':
-        home.item.id,
+      'home-team': home.item.id,
 
-      'away-team':
-        away.item.id,
+      'away-team': away.item.id,
 
-      'home-badge':
-        getField(
-          home.item,
-          'badge'
-        ) ||
-        null,
+      'home-badge': getField(home.item, 'badge') || null,
 
-      'away-badge':
-        getField(
-          away.item,
-          'badge'
-        ) ||
-        null,
+      'away-badge': getField(away.item, 'badge') || null,
 
-      'match-date':
-        fixture.fixture.date,
+      'match-date': fixture.fixture.date,
 
-      'round-label':
-        fixture.league
-          ?.round ||
-        'Group Stage',
+      'round-label': fixture.league?.round || 'Group Stage',
 
       matchweek,
 
-      'home-score':
-        fixture.goals
-          ?.home ??
-        null,
+      'home-score': fixture.goals?.home ?? null,
 
-      'away-score':
-        fixture.goals
-          ?.away ??
-        null,
+      'away-score': fixture.goals?.away ?? null,
 
-      status:
-        mapMatchStatus(
-          fixture.fixture
-            .status
-            ?.short
-        ),
+      status: mapMatchStatus(fixture.fixture.status?.short),
 
-      venue:
-        fixture.fixture
-          .venue
-          ?.name ||
-        '',
+      venue: fixture.fixture.venue?.name || '',
 
-      'api-fixture-id':
-        fixture.fixture.id
+      'api-fixture-id': fixture.fixture.id
     };
 
-    const existing =
-      existingByApiId.get(
-        fixtureId
-      );
+    const existing = existingByApiId.get(fixtureId);
 
     if (existing) {
-      const changed =
-        getChangedFields(
-          existing,
-          fieldData
-        );
+      const changed = getChangedFields(existing, fieldData);
 
-      if (
-        Object.keys(
-          changed
-        ).length
-      ) {
-        await wfUpdateItem(
-          WF.MATCHES,
-          existing.id,
-          changed
-        );
+      if (Object.keys(changed).length) {
+        await wfUpdateItem(WF.MATCHES, existing.id, changed);
 
-        publishIds.push(
-          existing.id
-        );
+        publishIds.push(existing.id);
 
         updated++;
       } else {
         unchanged++;
       }
     } else {
-      const newItem =
-        await wfCreateItem(
-          WF.MATCHES,
-          fieldData
-        );
+      const newItem = await wfCreateItem(WF.MATCHES, fieldData);
 
-      publishIds.push(
-        newItem.id
-      );
+      publishIds.push(newItem.id);
 
       created++;
     }
   }
 
-  await wfPublishItems(
-    WF.MATCHES,
-    publishIds
-  );
+  await wfPublishItems(WF.MATCHES, publishIds);
 
-  const staleLiveIds =
-    uclMatches
-      .filter(
-        item => {
-          const apiId =
-            getField(
-              item,
-              'api-fixture-id'
-            );
+  const staleLiveIds = uclMatches
+    .filter(item => {
+      const apiId = getField(item, 'api-fixture-id');
 
-          return (
-            apiId &&
-            !currentFixtureIds.has(
-              String(apiId)
-            ) &&
-            !item.isDraft
-          );
-        }
-      )
-      .map(
-        item =>
-          item.id
+      return (
+        apiId &&
+        !currentFixtureIds.has(String(apiId)) &&
+        !item.isDraft
       );
+    })
+    .map(item => item.id);
 
-  if (
-    staleLiveIds.length
-  ) {
+  if (staleLiveIds.length) {
     console.log(
       'Unpublishing old/non-League-Phase UCL matches: ' +
         staleLiveIds.length
     );
 
-    await wfUnpublishItems(
-      WF.MATCHES,
-      staleLiveIds
-    );
+    await wfUnpublishItems(WF.MATCHES, staleLiveIds);
   }
 
   console.log(
@@ -2329,259 +1322,119 @@ async function syncMatches(
 // LEAGUE METADATA
 // ============================================================
 
-function normalizeDisplayName(
-  value
-) {
+function normalizeDisplayName(value) {
   return String(value || '')
     .toLowerCase()
-    .replace(
-      /[^a-z0-9]+/g,
-      ' '
-    )
+    .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 }
 
-function findFieldByNames(
-  collection,
-  names
-) {
-  const wanted =
-    new Set(
-      names.map(
-        normalizeDisplayName
-      )
-    );
+function findFieldByNames(collection, names) {
+  const wanted = new Set(names.map(normalizeDisplayName));
 
   return (
-    (
-      collection.fields ||
-      []
-    ).find(
-      field =>
-        wanted.has(
-          normalizeDisplayName(
-            field.displayName
-          )
-        )
-    ) ||
-    null
+    (collection.fields || []).find(field =>
+      wanted.has(normalizeDisplayName(field.displayName))
+    ) || null
   );
 }
 
-async function syncLeagueMetadata(
-  leagueFixtures,
-  matchweekInfo
-) {
-  console.log(
-    '\n=== LEAGUE METADATA ==='
-  );
+async function syncLeagueMetadata(leagueFixtures, matchweekInfo) {
+  console.log('\n=== LEAGUE METADATA ===');
 
   // Keep these sequential so Webflow calls
   // cannot race our own throttle.
-  const collection =
-    await wfGetCollection(
-      WF.LEAGUES
-    );
+  const collection = await wfGetCollection(WF.LEAGUES);
 
-  const leagueItem =
-    await wfGetItem(
-      WF.LEAGUES,
-      UCL.webflow_id
-    );
+  const leagueItem = await wfGetItem(WF.LEAGUES, UCL.webflow_id);
 
-  const seasonField =
-    findFieldByNames(
-      collection,
-      [
-        'Season'
-      ]
-    );
+  const seasonField = findFieldByNames(collection, ['Season']);
 
-  const clubsField =
-    findFieldByNames(
-      collection,
-      [
-        'Total Clubs',
-        'Clubs'
-      ]
-    );
+  const clubsField = findFieldByNames(collection, [
+    'Total Clubs',
+    'Clubs'
+  ]);
 
-  const matchdayField =
-    findFieldByNames(
-      collection,
-      [
-        'Current Matchday',
-        'Matchday'
-      ]
-    );
+  const matchdayField = findFieldByNames(collection, [
+    'Current Matchday',
+    'Matchday'
+  ]);
 
-  const goalsField =
-    findFieldByNames(
-      collection,
-      [
-        'Total Goals'
-      ]
-    );
+  const goalsField = findFieldByNames(collection, ['Total Goals']);
 
-  const gpgField =
-    findFieldByNames(
-      collection,
-      [
-        'Goals Per Game'
-      ]
-    );
+  const gpgField = findFieldByNames(collection, ['Goals Per Game']);
 
-  const startedOrFinished =
-    leagueFixtures.filter(
-      fixture => {
-        const status =
-          fixture.fixture
-            .status
-            ?.short;
+  const startedOrFinished = leagueFixtures.filter(fixture => {
+    const status = fixture.fixture.status?.short;
 
-        return (
-          LIVE_STATUSES.has(
-            status
-          ) ||
-          FINISHED_STATUSES.has(
-            status
-          )
-        );
-      }
+    return (
+      LIVE_STATUSES.has(status) ||
+      FINISHED_STATUSES.has(status)
     );
+  });
 
-  const finished =
-    leagueFixtures.filter(
-      fixture =>
-        FINISHED_STATUSES.has(
-          fixture.fixture
-            .status
-            ?.short
-        )
-    );
+  const finished = leagueFixtures.filter(fixture =>
+    FINISHED_STATUSES.has(fixture.fixture.status?.short)
+  );
 
   let currentMatchday = 0;
   let totalGoals = 0;
 
-  for (
-    const fixture
-    of startedOrFinished
-  ) {
-    const mw =
-      matchweekInfo
-        .byFixtureId
-        .get(
-          String(
-            fixture.fixture.id
-          )
-        );
+  for (const fixture of startedOrFinished) {
+    const mw = matchweekInfo.byFixtureId.get(
+      String(fixture.fixture.id)
+    );
 
-    if (
-      mw &&
-      mw >
-        currentMatchday
-    ) {
-      currentMatchday =
-        mw;
+    if (mw && mw > currentMatchday) {
+      currentMatchday = mw;
     }
   }
 
-  for (
-    const fixture
-    of finished
-  ) {
-    const home =
-      Number(
-        fixture.goals
-          ?.home
-      );
+  for (const fixture of finished) {
+    const home = Number(fixture.goals?.home);
 
-    const away =
-      Number(
-        fixture.goals
-          ?.away
-      );
+    const away = Number(fixture.goals?.away);
 
-    if (
-      Number.isFinite(
-        home
-      )
-    ) {
+    if (Number.isFinite(home)) {
       totalGoals += home;
     }
 
-    if (
-      Number.isFinite(
-        away
-      )
-    ) {
+    if (Number.isFinite(away)) {
       totalGoals += away;
     }
   }
 
-  const goalsPerGame =
-    finished.length
-      ? (
-          totalGoals /
-          finished.length
-        )
-          .toFixed(2)
-          .replace(
-            /\.00$/,
-            ''
-          )
-      : '0';
+  const goalsPerGame = finished.length
+    ? (totalGoals / finished.length)
+        .toFixed(2)
+        .replace(/\.00$/, '')
+    : '0';
 
   const proposed = {};
 
   if (seasonField) {
-    proposed[
-      seasonField.slug
-    ] =
-      UCL.seasonLabel;
+    proposed[seasonField.slug] = UCL.seasonLabel;
   }
 
   if (clubsField) {
-    proposed[
-      clubsField.slug
-    ] =
-      EXPECTED_TEAMS;
+    proposed[clubsField.slug] = EXPECTED_TEAMS;
   }
 
   if (matchdayField) {
-    proposed[
-      matchdayField.slug
-    ] =
-      currentMatchday;
+    proposed[matchdayField.slug] = currentMatchday;
   }
 
   if (goalsField) {
-    proposed[
-      goalsField.slug
-    ] =
-      totalGoals;
+    proposed[goalsField.slug] = totalGoals;
   }
 
   if (gpgField) {
-    proposed[
-      gpgField.slug
-    ] =
-      String(
-        goalsPerGame
-      );
+    proposed[gpgField.slug] = String(goalsPerGame);
   }
 
-  const changed =
-    getChangedFields(
-      leagueItem,
-      proposed
-    );
+  const changed = getChangedFields(leagueItem, proposed);
 
-  if (
-    !Object.keys(
-      changed
-    ).length
-  ) {
+  if (!Object.keys(changed).length) {
     console.log(
       'League metadata unchanged — skipping Webflow write.'
     );
@@ -2589,23 +1442,11 @@ async function syncLeagueMetadata(
     return;
   }
 
-  console.log(
-    'Metadata changes:',
-    changed
-  );
+  console.log('Metadata changes:', changed);
 
-  await wfUpdateItem(
-    WF.LEAGUES,
-    UCL.webflow_id,
-    changed
-  );
+  await wfUpdateItem(WF.LEAGUES, UCL.webflow_id, changed);
 
-  await wfPublishItems(
-    WF.LEAGUES,
-    [
-      UCL.webflow_id
-    ]
-  );
+  await wfPublishItems(WF.LEAGUES, [UCL.webflow_id]);
 }
 
 // ============================================================
@@ -2613,10 +1454,7 @@ async function syncLeagueMetadata(
 // ============================================================
 
 async function main() {
-  if (
-    !WEBFLOW_TOKEN ||
-    !API_FOOTBALL_KEY
-  ) {
+  if (!WEBFLOW_TOKEN || !API_FOOTBALL_KEY) {
     throw new Error(
       'Missing WEBFLOW_TOKEN or API_FOOTBALL_KEY'
     );
@@ -2626,102 +1464,56 @@ async function main() {
     '============================================================'
   );
 
-  console.log(
-    'UCL 2026/27 PRODUCTION SYNC'
-  );
+  console.log('UCL 2026/27 PRODUCTION SYNC');
 
-  console.log(
-    'League Phase only'
-  );
+  console.log('League Phase only');
 
-  console.log(
-    'Rate-limit-safe mode enabled'
-  );
+  console.log('Rate-limit-safe mode enabled');
 
   console.log(
     '============================================================\n'
   );
 
-  console.log(
-    'Fetching API-Football UCL data...'
-  );
+  console.log('Fetching API-Football UCL data...');
 
-  const [
-    teamsData,
-    standingsData,
-    fixturesData
-  ] =
+  const [teamsData, standingsData, fixturesData] =
     await Promise.all([
       apiFetch(
-        '/teams?league=' +
-          UCL.api_id +
-          '&season=' +
-          UCL.season
+        '/teams?league=' + UCL.api_id + '&season=' + UCL.season
       ),
 
       apiFetch(
-        '/standings?league=' +
-          UCL.api_id +
-          '&season=' +
-          UCL.season
+        '/standings?league=' + UCL.api_id + '&season=' + UCL.season
       ),
 
       apiFetch(
-        '/fixtures?league=' +
-          UCL.api_id +
-          '&season=' +
-          UCL.season
+        '/fixtures?league=' + UCL.api_id + '&season=' + UCL.season
       )
     ]);
 
-  const allFixtures =
-    fixturesData.response ||
-    [];
+  const allFixtures = fixturesData.response || [];
 
-  const leagueFixtures =
-    allFixtures.filter(
-      fixture =>
-        isLeaguePhaseRound(
-          fixture.league
-            ?.round
-        )
-    );
-
-  const finalTeams =
-    uniqueTeamsFromFixtures(
-      leagueFixtures
-    );
-
-  console.log(
-    'API all UCL teams: ' +
-      (
-        teamsData.response ||
-        []
-      ).length
+  const leagueFixtures = allFixtures.filter(fixture =>
+    isLeaguePhaseRound(fixture.league?.round)
   );
 
-  console.log(
-    'API all UCL fixtures: ' +
-      allFixtures.length
-  );
+  const finalTeams = uniqueTeamsFromFixtures(leagueFixtures);
 
   console.log(
-    'League Phase fixtures: ' +
-      leagueFixtures.length
+    'API all UCL teams: ' + (teamsData.response || []).length
   );
 
-  console.log(
-    'League Phase unique teams: ' +
-      finalTeams.length
-  );
+  console.log('API all UCL fixtures: ' + allFixtures.length);
+
+  console.log('League Phase fixtures: ' + leagueFixtures.length);
+
+  console.log('League Phase unique teams: ' + finalTeams.length);
 
   // HARD SAFETY GATE:
   // Qualifiers cannot leak into production.
   if (
-    finalTeams.length !==
-      EXPECTED_TEAMS ||
-    leagueFixtures.length !==
-      EXPECTED_FIXTURES
+    finalTeams.length !== EXPECTED_TEAMS ||
+    leagueFixtures.length !== EXPECTED_FIXTURES
   ) {
     throw new Error(
       'SAFETY STOP: expected exactly 36 League Phase teams and 144 fixtures, got ' +
@@ -2732,20 +1524,13 @@ async function main() {
     );
   }
 
-  const matchweekInfo =
-    inferMatchweeks(
-      leagueFixtures
-    );
+  const matchweekInfo = inferMatchweeks(leagueFixtures);
 
   console.log(
-    'Inferred League Phase matchweeks: ' +
-      matchweekInfo.count
+    'Inferred League Phase matchweeks: ' + matchweekInfo.count
   );
 
-  if (
-    matchweekInfo.count !==
-    EXPECTED_MATCHWEEKS
-  ) {
+  if (matchweekInfo.count !== EXPECTED_MATCHWEEKS) {
     console.warn(
       'WARNING: expected 8 matchweek date clusters, got ' +
         matchweekInfo.count +
@@ -2761,18 +1546,12 @@ async function main() {
     return;
   }
 
-  console.log(
-    '\nCONFIRM=yes — beginning Webflow writes.'
-  );
+  console.log('\nCONFIRM=yes — beginning Webflow writes.');
 
-  const {
-    lookup:
-      teamLookup
-  } =
-    await syncTeams(
-      finalTeams,
-      teamsData
-    );
+  const { lookup: teamLookup } = await syncTeams(
+    finalTeams,
+    teamsData
+  );
 
   await syncStandings(
     finalTeams,
@@ -2781,13 +1560,8 @@ async function main() {
     leagueFixtures
   );
 
-  if (
-    matchweekInfo.count ===
-    EXPECTED_MATCHWEEKS
-  ) {
-    console.log(
-      '\nFinal UCL schedule detected: 8 matchweeks.'
-    );
+  if (matchweekInfo.count === EXPECTED_MATCHWEEKS) {
+    console.log('\nFinal UCL schedule detected: 8 matchweeks.');
 
     await syncMatches(
       leagueFixtures,
@@ -2795,9 +1569,7 @@ async function main() {
       matchweekInfo
     );
   } else {
-    console.log(
-      '\nUCL schedule is not finalized yet.'
-    );
+    console.log('\nUCL schedule is not finalized yet.');
 
     console.log(
       'Detected matchweek clusters: ' +
@@ -2809,35 +1581,23 @@ async function main() {
     await unpublishUclFixturesUntilScheduleReady();
   }
 
-  await syncLeagueMetadata(
-    leagueFixtures,
-    matchweekInfo
-  );
+  await syncLeagueMetadata(leagueFixtures, matchweekInfo);
 
   console.log(
     '\n============================================================'
   );
 
-  console.log(
-    'UCL 2026/27 SYNC COMPLETE'
-  );
+  console.log('UCL 2026/27 SYNC COMPLETE');
 
   console.log(
     '============================================================'
   );
 
-  console.log(
-    'Top scorers intentionally NOT synced yet.'
-  );
+  console.log('Top scorers intentionally NOT synced yet.');
 }
 
-main().catch(
-  err => {
-    console.error(
-      'FATAL:',
-      err.message
-    );
+main().catch(err => {
+  console.error('FATAL:', err.message);
 
-    process.exit(1);
-  }
-);
+  process.exit(1);
+});
