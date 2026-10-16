@@ -106,7 +106,11 @@ function getFormString(form) {
 }
 
 function mapMatchStatus(shortStatus) {
-  const finished = ['FT', 'AET', 'PEN'];
+  // FT/AET/PEN = normally finished. ABD/PST/CANC/WO/AWD = match will
+  // never kick off (or won't resume) as scheduled, so it must NOT fall
+  // back to "Upcoming" - that made abandoned/postponed matches reappear
+  // on the site as a future "Next Match" fixture. Treat them as over.
+  const finished = ['FT', 'AET', 'PEN', 'ABD', 'PST', 'CANC', 'WO', 'AWD'];
 
   const live = [
     '1H',

@@ -51,7 +51,10 @@ const LIVE_STATUSES = new Set([
   '1H', '2H', 'HT', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE'
 ]);
 
-const FINISHED_STATUSES = new Set(['FT', 'AET', 'PEN']);
+// ABD/PST/CANC/WO/AWD included so a match that will never kick off (or
+// resume) as scheduled is treated as over, not left to fall through to
+// "Upcoming" and reappear on the site as a future fixture.
+const FINISHED_STATUSES = new Set(['FT', 'AET', 'PEN', 'ABD', 'PST', 'CANC', 'WO', 'AWD']);
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
