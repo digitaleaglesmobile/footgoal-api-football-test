@@ -19,6 +19,22 @@ const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
 if (!WEBFLOW_TOKEN) throw new Error('Missing WEBFLOW_TOKEN');
 if (!API_FOOTBALL_KEY) throw new Error('Missing API_FOOTBALL_KEY');
 
+// DRY_RUN=true: read everything, log what WOULD be written, write nothing.
+const DRY_RUN = String(process.env.DRY_RUN || '').toLowerCase() === 'true';
+
+// NOW_OVERRIDE (ISO string) lets us replay a past match window in tests.
+function nowMs() {
+  return process.env.NOW_OVERRIDE
+    ? Date.parse(process.env.NOW_OVERRIDE)
+    : Date.now();
+}
+
+// Match window around kickoff. Outside every window (and with nothing
+// marked Live) the script makes ZERO API-Football calls.
+const WINDOW_BEFORE_MIN = 5;     // start watching just before kickoff
+const WINDOW_AFTER_MIN = 240;    // keep watching up to 4h after kickoff
+const API_IDS_PER_CALL = 20;     // API-Football limit for /fixtures?ids=
+
 const WF = {
   TEAMS: '6a20064807685f373db26660',
   STANDINGS: '6a200649847c9fcb9278de02',
@@ -88,7 +104,6 @@ const LEAGUE_BY_API_ID = new Map(
   LEAGUES.map(league => [Number(league.api_id), league])
 );
 
-const STALE_LOOKUP_CONCURRENCY = 4;
 const LIVE_ITEM_READ_CONCURRENCY = 6;
 const STANDINGS_FALLBACK_MINUTES = 10;
 
@@ -221,27 +236,6 @@ async function apiFetch(path, retries = 4) {
   return data;
 }
 
-async function getSupportedLiveFixtures() {
-  const data = await apiFetch('/fixtures?live=all');
-
-  return (data.response || []).filter(
-    fixture =>
-      fixture.league &&
-      LEAGUE_BY_API_ID.has(Number(fixture.league.id))
-  );
-}
-
-async function getFixtureById(fixtureId) {
-  const data = await apiFetch(
-    '/fixtures?id=' + encodeURIComponent(String(fixtureId))
-  );
-
-  return data.response && data.response[0]
-    ? data.response[0]
-    : null;
-}
-
-
 // ============================================================
 // WEBFLOW LOW-LEVEL
 // ============================================================
@@ -351,6 +345,11 @@ async function wfBulkUpdateStaged(collectionId, updates) {
     return;
   }
 
+  if (DRY_RUN) {
+    console.log(`[DRY RUN] would write (staged) ${updates.length} item(s) in ${collectionId}`);
+    return;
+  }
+
   for (let i = 0; i < updates.length; i += 100) {
     const batch = updates.slice(i, i + 100);
 
@@ -373,6 +372,11 @@ async function wfBulkUpdateStaged(collectionId, updates) {
 
 async function wfBulkUpdateLive(collectionId, updates) {
   if (!updates.length) {
+    return;
+  }
+
+  if (DRY_RUN) {
+    console.log(`[DRY RUN] would write (direct live) ${updates.length} item(s) in ${collectionId}`);
     return;
   }
 
@@ -403,6 +407,11 @@ async function wfPublishItems(collectionId, itemIds) {
     return;
   }
 
+  if (DRY_RUN) {
+    console.log(`[DRY RUN] would publish ${ids.length} item(s) in ${collectionId}`);
+    return;
+  }
+
   for (let i = 0; i < ids.length; i += 100) {
     const batch = ids.slice(i, i + 100);
 
@@ -428,46 +437,117 @@ async function wfPublishItems(collectionId, itemIds) {
 // WEBFLOW MATCH LOOKUPS
 // ============================================================
 
-async function getCmsMatchesByFixtureIds(fixtureIds) {
-  const ids = [
-    ...new Set(
-      fixtureIds
-        .map(String)
-        .filter(Boolean)
-    ),
-  ];
+// ------------------------------------------------------------
+// Status values. Webflow stores the Status dropdown as an option ID
+// (e.g. "6d0267f3..."), NOT the word "Played". Reads and filters must use
+// the ID; writes by name are accepted by Webflow (league-sync-v2 does it).
+// IDs are re-read from the collection schema each run, with these as fallback.
+// ------------------------------------------------------------
 
-  if (!ids.length) {
-    return [];
+const STATUS_ID_TO_NAME = new Map([
+  ['06496e65ce4253beaff81cb87181f6e4', 'Upcoming'],
+  ['fc9117826d7a9e41c397c343cbe1d896', 'Live'],
+  ['6d0267f305b270ca7a5dcfd8a5cc780e', 'Played'],
+]);
+
+function statusIdFor(name) {
+  for (const [id, n] of STATUS_ID_TO_NAME) {
+    if (n === name) return id;
   }
-
-  const items = [];
-
-  for (let i = 0; i < ids.length; i += 100) {
-    const result = await wfListFiltered(
-      WF.MATCHES,
-      {
-        'api-fixture-id': {
-          in: ids.slice(i, i + 100),
-        },
-      }
-    );
-
-    items.push(...result);
-  }
-
-  return items;
+  return null;
 }
 
-async function getCmsMatchesMarkedLive() {
-  return wfListFiltered(
-    WF.MATCHES,
-    {
-      status: {
-        eq: 'Live',
-      },
+function normalizeStatus(value) {
+  if (value == null) return value;
+  return STATUS_ID_TO_NAME.get(String(value)) || value;
+}
+
+async function loadStatusOptions() {
+  try {
+    const col = await wfFetch(
+      `https://api.webflow.com/v2/collections/${WF.MATCHES}`
+    );
+    const field = (col.fields || []).find(f => f.slug === 'status');
+    const options =
+      (field && field.validations && field.validations.options) ||
+      (field && field.metadata && field.metadata.options) ||
+      [];
+
+    for (const option of options) {
+      if (option.id && option.name) {
+        STATUS_ID_TO_NAME.set(String(option.id), option.name);
+      }
     }
-  );
+  } catch (error) {
+    console.warn(
+      `[STATUS] Could not read schema, using built-in option IDs: ${error.message}`
+    );
+  }
+}
+
+function cmsFieldsNormalized(fieldData) {
+  return {
+    ...(fieldData || {}),
+    status: normalizeStatus(fieldData ? fieldData.status : undefined),
+  };
+}
+
+// ------------------------------------------------------------
+// Which matches need attention this tick?
+//  - kickoff within [now - 4h, now + 5min] and not already Played
+//  - anything marked Live in the CMS, whatever its date
+// ------------------------------------------------------------
+
+async function getWatchList() {
+  const now = nowMs();
+
+  const from = new Date(now - WINDOW_AFTER_MIN * 60000).toISOString();
+  const to = new Date(now + WINDOW_BEFORE_MIN * 60000).toISOString();
+
+  const inWindow = await wfListFiltered(WF.MATCHES, {
+    'match-date': { gte: from, lte: to },
+  });
+
+  const liveId = statusIdFor('Live');
+
+  const markedLive = liveId
+    ? await wfListFiltered(WF.MATCHES, { status: { eq: liveId } })
+    : [];
+
+  const byId = new Map();
+
+  for (const item of [...inWindow, ...markedLive]) {
+    byId.set(item.id, item);
+  }
+
+  return [...byId.values()].filter(item => {
+    const fixtureId = item.fieldData?.['api-fixture-id'];
+    if (fixtureId == null) return false;
+
+    const status = normalizeStatus(item.fieldData?.status);
+    return status !== 'Played';
+  });
+}
+
+async function getFixturesByIds(fixtureIds) {
+  const ids = [...new Set(fixtureIds.map(String))];
+  const fixtures = [];
+
+  for (let i = 0; i < ids.length; i += API_IDS_PER_CALL) {
+    const chunk = ids.slice(i, i + API_IDS_PER_CALL);
+    const data = await apiFetch('/fixtures?ids=' + chunk.join('-'));
+
+    for (const fixture of data.response || []) {
+      if (
+        fixture.league &&
+        LEAGUE_BY_API_ID.has(Number(fixture.league.id))
+      ) {
+        fixtures.push(fixture);
+      }
+    }
+  }
+
+  return fixtures;
 }
 
 
@@ -491,115 +571,94 @@ function desiredMatchFields(fixture) {
   };
 }
 
-async function syncMatches(liveFixtures) {
-  const liveIds = liveFixtures.map(
-    fixture => String(fixture.fixture.id)
-  );
-
-  const liveIdSet = new Set(liveIds);
-
-  const currentCmsMatches = await getCmsMatchesByFixtureIds(liveIds);
-
+async function syncMatches(watchList) {
   const cmsByFixtureId = new Map();
 
-  for (const item of currentCmsMatches) {
-    const fixtureId = item.fieldData?.['api-fixture-id'];
-
-    if (fixtureId != null) {
-      cmsByFixtureId.set(
-        String(fixtureId),
-        item
-      );
-    }
+  for (const item of watchList) {
+    cmsByFixtureId.set(
+      String(item.fieldData['api-fixture-id']),
+      item
+    );
   }
 
-  const cmsMarkedLive = await getCmsMatchesMarkedLive();
+  const fixtures = await getFixturesByIds([...cmsByFixtureId.keys()]);
+
+  console.log(
+    `[MATCHES] Watching ${watchList.length} CMS match(es); ` +
+    `API returned ${fixtures.length}.`
+  );
 
   const stagedTransitionUpdates = new Map();
   const directLiveUpdates = new Map();
   const finishedLeagueIds = new Set();
-
-  // ----------------------------------------------------------
-  // CURRENTLY LIVE MATCHES
-  // ----------------------------------------------------------
-
+  const liveFixtures = [];
   const alreadyLivePairs = [];
 
-  for (const fixture of liveFixtures) {
+  for (const fixture of fixtures) {
     const fixtureId = String(fixture.fixture.id);
     const cmsItem = cmsByFixtureId.get(fixtureId);
 
-    if (!cmsItem) {
-      console.warn(
-        `[MATCH] ${fixtureId} not found in Webflow CMS. Full sync will handle it.`
-      );
-      continue;
-    }
+    if (!cmsItem) continue;
 
     const desired = desiredMatchFields(fixture);
-    const stagedStatus = cmsItem.fieldData?.status;
+    const cmsFields = cmsFieldsNormalized(cmsItem.fieldData);
+    const cmsStatus = cmsFields.status;
+    const label = cmsItem.fieldData?.name || fixtureId;
 
-    if (stagedStatus !== 'Live') {
-      const diff = getChangedFields(
-        cmsItem.fieldData,
-        desired
-      );
+    if (desired.status === 'Live') {
+      liveFixtures.push(fixture);
+    }
 
-      if (Object.keys(diff).length) {
-        stagedTransitionUpdates.set(
-          cmsItem.id,
-          {
-            id: cmsItem.id,
-            fieldData: diff,
-          }
-        );
-
-        console.log(
-          `[KICKOFF] ${cmsItem.fieldData?.name || fixtureId}`,
-          diff
-        );
-      }
-
+    // Live in both places: score changes go straight to the LIVE CMS.
+    if (desired.status === 'Live' && cmsStatus === 'Live') {
+      alreadyLivePairs.push({ fixture, cmsItem, desired });
       continue;
     }
 
-    alreadyLivePairs.push({
-      fixture,
-      cmsItem,
-    });
-  }
+    // Any status change (kickoff, finish, abandoned, ...) is staged
+    // and published once.
+    const diff = getChangedFields(cmsFields, desired);
 
-  // ----------------------------------------------------------
-  // ALREADY LIVE MATCHES
-  // ----------------------------------------------------------
+    if (Object.keys(diff).length) {
+      stagedTransitionUpdates.set(cmsItem.id, {
+        id: cmsItem.id,
+        fieldData: diff,
+      });
+
+      const tag =
+        desired.status === 'Live'
+          ? 'KICKOFF'
+          : cmsStatus === 'Live'
+            ? 'LIVE EXIT'
+            : 'STATUS';
+
+      console.log(`[${tag}] ${label}`, diff);
+
+      if (desired.status === 'Played') {
+        finishedLeagueIds.add(Number(fixture.league.id));
+      }
+    }
+  }
 
   await mapWithConcurrency(
     alreadyLivePairs,
     LIVE_ITEM_READ_CONCURRENCY,
-    async ({ fixture, cmsItem }) => {
+    async ({ fixture, cmsItem, desired }) => {
       const fixtureId = String(fixture.fixture.id);
 
       try {
-        const liveItem = await wfGetLiveItem(
-          WF.MATCHES,
-          cmsItem.id
-        );
-
-        const desired = desiredMatchFields(fixture);
+        const liveItem = await wfGetLiveItem(WF.MATCHES, cmsItem.id);
 
         const diff = getChangedFields(
-          liveItem?.fieldData || {},
+          cmsFieldsNormalized(liveItem?.fieldData),
           desired
         );
 
         if (Object.keys(diff).length) {
-          directLiveUpdates.set(
-            cmsItem.id,
-            {
-              id: cmsItem.id,
-              fieldData: diff,
-            }
-          );
+          directLiveUpdates.set(cmsItem.id, {
+            id: cmsItem.id,
+            fieldData: diff,
+          });
 
           console.log(
             `[LIVE CHANGE] ${cmsItem.fieldData?.name || fixtureId}`,
@@ -607,123 +666,26 @@ async function syncMatches(liveFixtures) {
           );
         }
       } catch (error) {
-        console.error(
-          `[LIVE READ] ${fixtureId}: ${error.message}`
-        );
+        console.error(`[LIVE READ] ${fixtureId}: ${error.message}`);
       }
     }
   );
 
-  // ----------------------------------------------------------
-  // LIVE -> FINISHED / NON-LIVE
-  // ----------------------------------------------------------
-
-  const staleLiveItems = cmsMarkedLive.filter(
-    item => {
-      const fixtureId = item.fieldData?.['api-fixture-id'];
-
-      return (
-        fixtureId != null &&
-        !liveIdSet.has(String(fixtureId))
-      );
-    }
-  );
-
-  await mapWithConcurrency(
-    staleLiveItems,
-    STALE_LOOKUP_CONCURRENCY,
-    async cmsItem => {
-      const fixtureId = cmsItem.fieldData?.['api-fixture-id'];
-
-      try {
-        const fixture = await getFixtureById(fixtureId);
-
-        if (!fixture) {
-          return;
-        }
-
-        const apiLeagueId = Number(
-          fixture.league?.id
-        );
-
-        if (!LEAGUE_BY_API_ID.has(apiLeagueId)) {
-          return;
-        }
-
-        const desired = desiredMatchFields(fixture);
-
-        if (desired.status === 'Live') {
-          return;
-        }
-
-        const diff = getChangedFields(
-          cmsItem.fieldData,
-          desired
-        );
-
-        if (Object.keys(diff).length) {
-          stagedTransitionUpdates.set(
-            cmsItem.id,
-            {
-              id: cmsItem.id,
-              fieldData: diff,
-            }
-          );
-
-          console.log(
-            `[LIVE EXIT] ${cmsItem.fieldData?.name || fixtureId}`,
-            diff
-          );
-        }
-
-        if (desired.status === 'Played') {
-          finishedLeagueIds.add(apiLeagueId);
-        }
-      } catch (error) {
-        console.error(
-          `[LIVE EXIT] ${fixtureId}: ${error.message}`
-        );
-      }
-    }
-  );
-
-  // ----------------------------------------------------------
-  // WRITE STATUS TRANSITIONS
-  // ----------------------------------------------------------
-
-  const stagedList = [
-    ...stagedTransitionUpdates.values(),
-  ];
+  const stagedList = [...stagedTransitionUpdates.values()];
 
   if (stagedList.length) {
-    await wfBulkUpdateStaged(
-      WF.MATCHES,
-      stagedList
-    );
-
-    await wfPublishItems(
-      WF.MATCHES,
-      stagedList.map(item => item.id)
-    );
+    await wfBulkUpdateStaged(WF.MATCHES, stagedList);
+    await wfPublishItems(WF.MATCHES, stagedList.map(item => item.id));
 
     console.log(
       `[MATCHES] Published ${stagedList.length} status transition(s).`
     );
   }
 
-  // ----------------------------------------------------------
-  // WRITE SCORE CHANGES DIRECTLY TO LIVE CMS
-  // ----------------------------------------------------------
-
-  const liveList = [
-    ...directLiveUpdates.values(),
-  ];
+  const liveList = [...directLiveUpdates.values()];
 
   if (liveList.length) {
-    await wfBulkUpdateLive(
-      WF.MATCHES,
-      liveList
-    );
+    await wfBulkUpdateLive(WF.MATCHES, liveList);
 
     console.log(
       `[MATCHES] Direct-live updated ${liveList.length} changed match(es).`
@@ -731,14 +693,10 @@ async function syncMatches(liveFixtures) {
   }
 
   if (!stagedList.length && !liveList.length) {
-    console.log(
-      '[MATCHES] No score/status changes. ZERO Webflow writes.'
-    );
+    console.log('[MATCHES] No score/status changes. ZERO Webflow writes.');
   }
 
-  return {
-    finishedLeagueIds,
-  };
+  return { finishedLeagueIds, liveFixtures };
 }
 
 
@@ -947,43 +905,28 @@ async function main() {
   const started = Date.now();
 
   console.log(
-    `sync-live.js tick @ ${new Date().toISOString()}`
+    `sync-live.js tick @ ${new Date(nowMs()).toISOString()}` +
+    (DRY_RUN ? '  [DRY RUN - no writes]' : '')
   );
 
-  const liveFixtures = await getSupportedLiveFixtures();
+  await loadStatusOptions();
 
-  if (liveFixtures.length) {
-    console.log(
-      `[LIVE] ${liveFixtures.length} supported live match(es):`
-    );
+  const watchList = await getWatchList();
 
-    for (const fixture of liveFixtures) {
-      console.log(
-        `  ${fixture.teams?.home?.name || '?'} ` +
-        `${fixture.goals?.home ?? '-'}-` +
-        `${fixture.goals?.away ?? '-'} ` +
-        `${fixture.teams?.away?.name || '?'}`
-      );
-    }
-  } else {
+  if (!watchList.length) {
     console.log(
-      '[LIVE] No supported live matches. Checking Live -> FT transitions only.'
+      '[GATE] No match in its kickoff window and nothing marked Live. ' +
+      'Zero API-Football calls this tick.'
     );
+    return;
   }
 
-  const {
-    finishedLeagueIds,
-  } = await syncMatches(liveFixtures);
+  const { finishedLeagueIds, liveFixtures } = await syncMatches(watchList);
 
-  await syncRelevantStandings(
-    liveFixtures,
-    finishedLeagueIds
-  );
+  await syncRelevantStandings(liveFixtures, finishedLeagueIds);
 
   console.log(
-    `sync-live.js finished in ${(
-      (Date.now() - started) / 1000
-    ).toFixed(1)}s.`
+    `sync-live.js finished in ${((Date.now() - started) / 1000).toFixed(1)}s.`
   );
 }
 

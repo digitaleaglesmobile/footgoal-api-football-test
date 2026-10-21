@@ -6,12 +6,21 @@ name: Sync Live Matches (1-min pinged)
 # minute to fire this workflow_dispatch event. See setup notes below.
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'true = read-only test run (logs what would be written, writes nothing)'
+        required: false
+        default: 'false'
+      now_override:
+        description: 'Optional ISO time to replay a past window (testing only)'
+        required: false
+        default: ''
 
 # Prevents two ticks from overlapping if a run is slow (rate-limited,
 # retrying, etc.) - the next minute's trigger will queue/cancel instead of
 # running in parallel and risking duplicate/conflicting Webflow writes.
 concurrency:
-  group: sync-live
+  group: sync-live-${{ inputs.dry_run || 'false' }}
   cancel-in-progress: false
 
 jobs:
@@ -27,4 +36,6 @@ jobs:
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          NOW_OVERRIDE: ${{ inputs.now_override }}
         run: node sync-live.js
