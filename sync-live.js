@@ -901,6 +901,33 @@ async function syncRelevantStandings(
 // MAIN
 // ============================================================
 
+// In dry-run mode, mirror log lines into one GitHub annotation so the
+// result is visible on the run page / API even without opening raw logs.
+const dryRunLog = [];
+
+if (DRY_RUN) {
+  const originalLog = console.log;
+
+  console.log = (...args) => {
+    originalLog(...args);
+    dryRunLog.push(
+      args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
+    );
+  };
+}
+
+function flushDryRunAnnotation() {
+  if (!DRY_RUN || !process.env.GITHUB_ACTIONS || !dryRunLog.length) return;
+
+  const text = dryRunLog
+    .join('\n')
+    .replace(/%/g, '%25')
+    .replace(/\r/g, '%0D')
+    .replace(/\n/g, '%0A');
+
+  process.stdout.write('::notice title=sync-live dry run::' + text + '\n');
+}
+
 async function main() {
   const started = Date.now();
 
@@ -930,7 +957,7 @@ async function main() {
   );
 }
 
-main().catch(error => {
+main().finally(flushDryRunAnnotation).catch(error => {
   console.error(
     'Fatal error:',
     error
