@@ -26,9 +26,10 @@ jobs:
         env:
           WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          CONFIRM: 'yes'
 
       - name: Show last output as annotation
         if: always()
         run: |
-          T=$(tail -n 60 ucl-out.txt | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+          T=$(tail -n 80 ucl-out.txt | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
           echo "::notice title=ucl dry output::$T"
