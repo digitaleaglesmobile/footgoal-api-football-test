@@ -2,8 +2,6 @@ name: Sync Top Scorers 2026 (every 4 hours)
 
 on:
   workflow_dispatch: {}
-  schedule:
-    - cron: '0 */4 * * *'
 
 concurrency:
   group: sync-topscorers
@@ -24,8 +22,14 @@ jobs:
           node-version: 20
 
       - name: Run safe 2026 top scorers sync
-        run: node sync-top-scorers-2026.js
+        run: node sync-top-scorers-2026.js 2>&1 | tee ts-out.txt; exit ${PIPESTATUS[0]}
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
           CONFIRM: 'yes'
+
+      - name: Show error lines as annotation
+        if: always()
+        run: |
+          T=$(grep -nE -i "error|fail|cannot|unable|warn|invalid|400|404|409|422|429|500" ts-out.txt | cut -c1-400 | tail -n 40 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+          echo "::notice title=top scorers error lines::$T"
