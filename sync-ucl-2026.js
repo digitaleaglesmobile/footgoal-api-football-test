@@ -700,7 +700,42 @@ function resolveTeam(apiTeam, lookup) {
     };
   }
 
+  // Last resort for malformed API rows (e.g. standings row with team.id null
+  // and a renamed club, "Sabah FC" vs CMS "Sabah FA"): compare names with
+  // club-type suffixes (FA/FC/FK/SC/...) removed. Only accepted if unique.
+  const coreKey = coreName(apiTeam.name);
+
+  if (coreKey) {
+    const coreMatches = [];
+
+    for (const items of lookup.byName.values()) {
+      for (const item of items) {
+        if (coreName(getField(item, 'name')) === coreKey) {
+          coreMatches.push(item);
+        }
+      }
+    }
+
+    if (coreMatches.length === 1) {
+      return {
+        item: coreMatches[0],
+        method: 'core-name'
+      };
+    }
+  }
+
   return null;
+}
+
+function coreName(value) {
+  return normalizeName(value)
+    .split(' ')
+    .filter(
+      word =>
+        word &&
+        !['fa', 'fc', 'fk', 'sc', 'cf', 'afc', 'sk', 'bk', 'if'].includes(word)
+    )
+    .join(' ');
 }
 
 function buildApiTeamMetadataMap(teamsData) {
