@@ -2,8 +2,6 @@ name: UCL 2026 Production Sync
 
 on:
   workflow_dispatch: {}
-  schedule:
-    - cron: '40 */6 * * *'
 
 concurrency:
   group: ucl-2026-sync
@@ -24,8 +22,13 @@ jobs:
           node-version: 20
 
       - name: Sync UCL 2026 League Phase
-        run: node sync-ucl-2026.js
+        run: node sync-ucl-2026.js 2>&1 | tee ucl-out.txt; exit ${PIPESTATUS[0]}
         env:
           WEBFLOW_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
-          CONFIRM: 'yes'
+
+      - name: Show last output as annotation
+        if: always()
+        run: |
+          T=$(tail -n 60 ucl-out.txt | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+          echo "::notice title=ucl dry output::$T"
