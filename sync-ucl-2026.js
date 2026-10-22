@@ -1006,6 +1006,13 @@ async function syncStandings(
     const teamMatch = resolveTeam(entry.team, teamLookup);
 
     if (!teamMatch) {
+      console.log('DEBUG unresolved standing team: id=' + entry.team.id + ' name=' + entry.team.name);
+      for (const [k, v] of teamLookup.byApiId) {
+        for (const it of v) {
+          const nm = String(getField(it, 'name'));
+          if (/sabah/i.test(nm)) console.log('DEBUG CMS team: api-team-id=' + k + ' name=' + nm + ' item=' + it.id);
+        }
+      }
       throw new Error(
         'Cannot resolve UCL standing team: ' + entry.team.name
       );
