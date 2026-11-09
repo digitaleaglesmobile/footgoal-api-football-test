@@ -1276,6 +1276,8 @@ async function syncMatches(
 
       'away-team': away.item.id,
 
+      teams: [home.item.id, away.item.id],
+
       'home-badge': getField(home.item, 'badge') || null,
 
       'away-badge': getField(away.item, 'badge') || null,
