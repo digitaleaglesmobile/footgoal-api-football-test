@@ -1,0 +1,75 @@
+name: Export app data
+
+# Reads published Webflow CMS content (read-only) and publishes JSON for the mobile app.
+# Runs on a schedule and can also be triggered by hand from the Actions tab.
+
+on:
+  schedule:
+    - cron: '20 */3 * * *'   # every 3 hours, at :20 (after the league syncs have finished)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (fetch + validate only, upload nothing)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: export-app-data
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Export from Webflow
+        env:
+          WEBFLOW_API_TOKEN: ${{ secrets.WEBFLOW_TOKEN }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            node scripts/app-export/export-app-data.mjs --dry-run
+          else
+            node scripts/app-export/export-app-data.mjs --out app-data
+          fi
+
+      # Keeps a copy of every export for 7 days (handy for debugging / rollback).
+      - name: Save export as build artifact
+        if: ${{ inputs.dry_run != true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-data
+          path: app-data
+          retention-days: 7
+
+      # Publish to Cloudflare Pages (free plan, no credit card needed).
+      # Each deploy is atomic: the app sees either the old export or the new one, never a mix.
+      - name: Prepare site folder
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          mkdir -p site/v1
+          cp -r app-data/. site/v1/
+          cat > site/_headers <<'EOF'
+          /v1/*
+            Content-Type: application/json; charset=utf-8
+            Cache-Control: public, max-age=300
+            Access-Control-Allow-Origin: *
+          /v1/manifest.json
+            ! Cache-Control
+            Cache-Control: public, max-age=60
+          EOF
+
+      - name: Deploy to Cloudflare Pages
+        if: ${{ inputs.dry_run != true }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROJECT: ${{ vars.PAGES_PROJECT || 'footgoal-app-data' }}
+        run: |
+          npx --yes wrangler@4 pages project create "$PROJECT" --production-branch main 2>/dev/null || true
+          npx --yes wrangler@4 pages deploy site --project-name "$PROJECT" --branch main --commit-dirty=true
