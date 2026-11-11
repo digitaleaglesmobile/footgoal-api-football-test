@@ -288,6 +288,9 @@ async function main() {
     process.exit(2);
   }
 
+  // API-Football fixture IDs the live-score proxy is allowed to look up.
+  addFile('fixture-ids.json', data.matches.map((m) => m.apiFixtureId).filter((x) => Number.isInteger(x)), data.matches.length);
+
   // League id → slug, for grouping files by league.
   const leagueSlug = new Map(data.leagues.map((l) => [l.id, l.slug]));
 

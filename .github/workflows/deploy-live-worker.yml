@@ -1,0 +1,28 @@
+name: Deploy live-score worker
+
+# Deploys workers/live (Cloudflare Worker "footgoal-live") used by the mobile app for live scores.
+on:
+  push:
+    branches: [main]
+    paths: ['workers/live/**', '.github/workflows/deploy-live-worker.yml']
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Deploy
+        working-directory: workers/live
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+        run: |
+          npx --yes wrangler@4 deploy
+          echo "$API_FOOTBALL_KEY" | npx --yes wrangler@4 secret put API_FOOTBALL_KEY
+          echo "## Live worker deployed" >> "$GITHUB_STEP_SUMMARY"
