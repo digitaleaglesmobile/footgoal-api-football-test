@@ -6,6 +6,10 @@ name: Export app data
 on:
   schedule:
     - cron: '20 */3 * * *'   # every 3 hours, at :20 (after the league syncs have finished)
+  # Also refresh right after the data syncs finish (backup for GitHub's sometimes-delayed cron).
+  workflow_run:
+    workflows: ['Full League Sync', 'Top Scorers 2026 Live Sync']
+    types: [completed]
   workflow_dispatch:
     inputs:
       dry_run:
