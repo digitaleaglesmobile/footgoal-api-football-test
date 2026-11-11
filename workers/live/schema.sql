@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS devices (token TEXT PRIMARY KEY, prefs TEXT NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS follows (token TEXT NOT NULL, team_id INTEGER NOT NULL, PRIMARY KEY (token, team_id));
+CREATE INDEX IF NOT EXISTS follows_team ON follows (team_id);
+CREATE TABLE IF NOT EXISTS fixture_state (fixture_id INTEGER PRIMARY KEY, status TEXT, home INTEGER, away INTEGER, updated_at INTEGER);
+CREATE TABLE IF NOT EXISTS sent (key TEXT PRIMARY KEY, at INTEGER NOT NULL);

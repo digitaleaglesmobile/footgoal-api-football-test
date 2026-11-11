@@ -23,6 +23,14 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
         run: |
+          # Create the D1 database on first deploy, then point wrangler.toml at it.
+          ID=$(npx --yes wrangler@4 d1 list --json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const db=JSON.parse(s).find(d=>d.name==='footgoal-push');console.log(db?db.uuid:'')})")
+          if [ -z "$ID" ]; then
+            npx --yes wrangler@4 d1 create footgoal-push
+            ID=$(npx --yes wrangler@4 d1 list --json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{console.log(JSON.parse(s).find(d=>d.name==='footgoal-push').uuid)})")
+          fi
+          sed -i "s/__D1_ID__/$ID/" wrangler.toml
+          npx --yes wrangler@4 d1 execute footgoal-push --remote --file schema.sql --yes
           npx --yes wrangler@4 deploy
           echo "$API_FOOTBALL_KEY" | npx --yes wrangler@4 secret put API_FOOTBALL_KEY
           echo "## Live worker deployed" >> "$GITHUB_STEP_SUMMARY"

@@ -291,6 +291,23 @@ async function main() {
   // API-Football fixture IDs the live-score proxy is allowed to look up.
   addFile('fixture-ids.json', data.matches.map((m) => m.apiFixtureId).filter((x) => Number.isInteger(x)), data.matches.length);
 
+  // Compact schedule for the notification service: upcoming and recent fixtures with API team IDs.
+  {
+    const teamApi = new Map(data.teams.map((t) => [t.id, Number(t.apiTeamId) || null]));
+    const teamName = new Map(data.teams.map((t) => [t.id, t.shortName && t.name.length > 18 ? t.shortName : t.name]));
+    const leagueSlugById = new Map(data.leagues.map((l) => [l.id, l.slug]));
+    const from = Date.now() - 2 * 86400000, to = Date.now() + 21 * 86400000;
+    const schedule = data.matches
+      .filter((m) => Number.isInteger(m.apiFixtureId) && m.matchDate)
+      .filter((m) => { const t = Date.parse(m.matchDate); return t >= from && t <= to; })
+      .map((m) => ({
+        f: m.apiFixtureId, k: m.matchDate, m: m.id, l: leagueSlugById.get(m.league) || 'other',
+        h: teamApi.get(m.homeTeam) ?? null, a: teamApi.get(m.awayTeam) ?? null,
+        hn: teamName.get(m.homeTeam) ?? (m.name.split(' vs ')[0] || ''), an: teamName.get(m.awayTeam) ?? (m.name.split(' vs ')[1] || ''),
+      }));
+    addFile('schedule.json', schedule, schedule.length);
+  }
+
   // League id → slug, for grouping files by league.
   const leagueSlug = new Map(data.leagues.map((l) => [l.id, l.slug]));
 

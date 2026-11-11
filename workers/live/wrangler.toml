@@ -3,4 +3,14 @@ main = "src/index.js"
 compatibility_date = "2026-11-01"
 workers_dev = true
 
+# Match notifications run every minute (see src/notify.js).
+[triggers]
+crons = ["* * * * *"]
+
+# Push subscriptions + notification dedupe. database_id is filled in by the deploy workflow.
+[[d1_databases]]
+binding = "DB"
+database_name = "footgoal-push"
+database_id = "__D1_ID__"
+
 # Secret (set by the deploy workflow): API_FOOTBALL_KEY

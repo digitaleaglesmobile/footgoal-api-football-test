@@ -7,10 +7,14 @@
  *   GET /live          → live fixtures in footgoal's 8 leagues (cached 30s)
  *   GET /fixture/:id   → one fixture with events, lineups, statistics
  *                        (30s while live, 10 min before kick-off, 12h after full time)
+ *   POST /subscribe    → {token, teams:[apiTeamId], prefs} from the app (push notifications)
+ *   cron (every min)   → match notifications, see notify.js
  *
  * Only fixture IDs that exist in footgoal's own CMS export are served, so the
  * proxy can't be used to spend API quota on arbitrary matches.
  */
+
+import { cleanup, runNotifications, subscribe } from './notify.js';
 
 const API = 'https://v3.football.api-sports.io';
 const FIXTURE_IDS_URL = 'https://footgoal-app-data.pages.dev/v1/fixture-ids.json';
@@ -24,11 +28,32 @@ const DONE = new Set(['FT', 'AET', 'PEN', 'AWD', 'WO', 'CANC', 'ABD', 'PST']);
 let allowed = { at: 0, ids: new Set() };
 
 export default {
+  async scheduled(event, env, ctx) {
+    const result = await runNotifications(env);
+    if (result.log.length) console.log(result.log.join('\n'));
+    if (new Date(event.scheduledTime).getUTCMinutes() === 7 && new Date(event.scheduledTime).getUTCHours() === 4) {
+      ctx.waitUntil(cleanup(env));
+    }
+  },
+
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') return new Response(null, { headers: cors() });
+    const url = new URL(request.url);
+
+    if (request.method === 'POST' && url.pathname === '/subscribe') {
+      const len = Number(request.headers.get('content-length') || 0);
+      if (len > 10_000) return json({ error: 'too large' }, 413);
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: 'invalid json' }, 400);
+      }
+      const r = await subscribe(env, body);
+      return json(r.body, r.status);
+    }
     if (request.method !== 'GET') return json({ error: 'method not allowed' }, 405);
 
-    const url = new URL(request.url);
     try {
       if (url.pathname === '/live') {
         return cached(request, ctx, 30, () => getLive(env));
@@ -129,7 +154,7 @@ async function cached(request, ctx, fixedTtl, produce) {
 }
 
 function cors() {
-  return { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET, OPTIONS' };
+  return { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'content-type' };
 }
 function withCors(res) {
   const r = new Response(res.body, res);
