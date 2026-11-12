@@ -78,6 +78,12 @@ async function main() {
     if (!byLeague.has(t.league)) byLeague.set(t.league, []);
     byLeague.get(t.league).push(t);
   }
+  // Domestic clubs also playing in the Champions League appear in that game too.
+  const ucl = leagues.find((l) => l.slug === 'champions-league');
+  if (ucl) {
+    if (!byLeague.has(ucl.id)) byLeague.set(ucl.id, []);
+    for (const t of teams) if (t.alsoInChampionsLeague && t.apiTeamId && t.league !== ucl.id) byLeague.get(ucl.id).push(t);
+  }
 
   // Refresh the stalest teams first, within the per-run call budget.
   const plan = [];
