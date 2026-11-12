@@ -64,3 +64,13 @@ node scripts/app-export/test/mock-webflow.mjs &
 WEBFLOW_API_BASE=http://localhost:8787/v2 WEBFLOW_API_TOKEN=test-token \
   node scripts/app-export/export-app-data.mjs --out /tmp/app-data
 ```
+
+## Squads (Guess the Lineup)
+
+`squads.mjs` runs after the export on the same folder and writes `squads/leagues.json`
+and `squads/<league-slug>.json` (same shape as the web game's `public/data`). Team lists
+come from the CMS export, squads from API-Football `/players/squads`. Each squad is cached
+between runs (actions/cache) and refreshed once it is older than 72 hours
+(`SQUAD_MAX_AGE_HOURS`), so the normal cost is about 60 calls a day. Run the
+"Export app data" workflow with **Re-fetch every squad now** ticked to refresh them all
+at once (about 190 calls), for example on transfer deadline day.

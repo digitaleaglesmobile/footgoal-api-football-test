@@ -16,6 +16,10 @@ on:
         description: 'Dry run (fetch + validate only, upload nothing)'
         type: boolean
         default: false
+      refresh_squads:
+        description: 'Re-fetch every squad now (about 190 API-Football calls)'
+        type: boolean
+        default: false
 
 concurrency:
   group: export-app-data
@@ -41,6 +45,30 @@ jobs:
           else
             node scripts/app-export/export-app-data.mjs --out app-data
           fi
+
+      # Squads for Guess the Lineup. Each team's squad is cached between runs and
+      # only re-fetched when older than 3 days, so this costs ~60 API calls a day.
+      - name: Restore squads cache
+        if: ${{ inputs.dry_run != true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .squads-cache
+          key: squads-${{ github.run_id }}
+          restore-keys: squads-
+
+      - name: Build squads
+        if: ${{ inputs.dry_run != true }}
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+        run: |
+          node scripts/app-export/squads.mjs --out app-data --cache .squads-cache ${{ inputs.refresh_squads == true && '--force' || '' }}
+
+      - name: Save squads cache
+        if: ${{ inputs.dry_run != true && always() }}
+        uses: actions/cache/save@v4
+        with:
+          path: .squads-cache
+          key: squads-${{ github.run_id }}
 
       # Keeps a copy of every export for 7 days (handy for debugging / rollback).
       - name: Save export as build artifact
